@@ -24,6 +24,9 @@
       {
         systems = [
           "x86_64-linux"
+          "aarch64-linux"
+          "x86_64-darwin"
+          "aarch64-darwin"
         ];
         perSystem =
           {
@@ -31,11 +34,27 @@
             ...
           }:
           {
-            devShells.default = pkgs.mkShellNoCC {
-              packages = [
-                inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system}.pi
-                pkgs.uv
-              ];
+            devShells.default = pkgs.mkShell {
+              packages =
+                [
+                  inputs.llm-agents.packages.${pkgs.stdenv.hostPlatform.system}.pi
+                  pkgs.dioxus-cli
+                  pkgs.pkg-config
+                ]
+                ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+                  pkgs.webkitgtk_4_1
+                  pkgs.gtk3
+                  pkgs.libsoup_3
+                  pkgs.glib
+                  pkgs.cairo
+                  pkgs.pango
+                  pkgs.gdk-pixbuf
+                  pkgs.atk
+                  pkgs.openssl
+                  pkgs.xdo
+                  pkgs.libayatana-appindicator
+                  pkgs.librsvg
+                ];
             };
           };
       }
