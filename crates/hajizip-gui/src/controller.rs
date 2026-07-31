@@ -20,8 +20,9 @@ use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
 use hajizip_core::{
-    Archive, CancellationToken, EntryMeta, EntryPath, Error as CoreError, ExtractReport,
-    FilenameEncoding, NodeKind, OpenOptions, OverwritePolicy, Registry, Secret, Source,
+    Archive, CancellationToken, EntryMeta, EntryPath, Error as CoreError, ExtractEngine,
+    ExtractOptions, ExtractReport, FilenameEncoding, NodeKind, OpenOptions, OverwritePolicy,
+    ProgressSink, Registry, Secret, Source,
 };
 
 use crate::config::AppConfig;
@@ -199,7 +200,7 @@ impl ControllerCore {
     /// This is the heart of the controller and is safe to call from tests
     /// without any UI or threads. Long-running operations (extraction) stream
     /// progress events through `emit` as they run.
-    pub fn handle(&mut self, intent: &Intent, emit: &mut dyn FnMut(Event)) {
+    pub fn handle(&mut self, intent: &Intent, emit: &mut (dyn FnMut(Event) + Send)) {
         match intent {
             Intent::Open { path, password } => self.open(path, password.as_deref(), emit),
             Intent::Enter { path } => self.enter(path, emit),
@@ -232,7 +233,7 @@ impl ControllerCore {
     }
 
     /// Open a top-level archive and list its entries.
-    fn open(&mut self, path: &Path, password: Option<&str>, emit: &mut dyn FnMut(Event)) {
+    fn open(&mut self, path: &Path, password: Option<&str>, emit: &mut (dyn FnMut(Event) + Send)) {
         let opts = OpenOptions {
             password: password.map(Secret::new),
             encoding: self.config.filename_encoding,
@@ -283,7 +284,7 @@ impl ControllerCore {
 
     /// Re-open the last source with the current encoding (encoding switch
     /// refresh). Navigation resets to the archive root.
-    fn refresh_view(&mut self, emit: &mut dyn FnMut(Event)) {
+    fn refresh_view(&mut self, emit: &mut (dyn FnMut(Event) + Send)) {
         let Some((path, password)) = self.last_open.clone() else {
             return;
         };
@@ -291,7 +292,7 @@ impl ControllerCore {
     }
 
     /// Enter a child directory or a nested archive.
-    fn enter(&mut self, path: &EntryPath, emit: &mut dyn FnMut(Event)) {
+    fn enter(&mut self, path: &EntryPath, emit: &mut (dyn FnMut(Event) + Send)) {
         let Some(top) = self.stack.last().cloned() else {
             emit(Event::Error("no archive open".into()));
             return;
@@ -367,7 +368,7 @@ impl ControllerCore {
     }
 
     /// Go back up one level: parent directory, or the outer archive.
-    fn back(&mut self, emit: &mut dyn FnMut(Event)) {
+    fn back(&mut self, emit: &mut (dyn FnMut(Event) + Send)) {
         if self.stack.is_empty() {
             emit(Event::Error("no archive open".into()));
             return;
@@ -401,7 +402,7 @@ impl ControllerCore {
     }
 
     /// Jump to a breadcrumb segment (truncating the stack).
-    fn jump_to(&mut self, depth: usize, emit: &mut dyn FnMut(Event)) {
+    fn jump_to(&mut self, depth: usize, emit: &mut (dyn FnMut(Event) + Send)) {
         let segments = self.breadcrumb();
         let Some(segment) = segments.get(depth).cloned() else {
             emit(Event::Error("invalid breadcrumb depth".into()));
@@ -442,7 +443,7 @@ impl ControllerCore {
     }
 
     /// Emit the current view (top frame's focus + cached entries).
-    fn emit_navigated(&mut self, emit: &mut dyn FnMut(Event)) {
+    fn emit_navigated(&mut self, emit: &mut (dyn FnMut(Event) + Send)) {
         let Some(top) = self.stack.last() else {
             return;
         };
@@ -453,10 +454,18 @@ impl ControllerCore {
         });
     }
 
-    /// Run an extraction: iterate the selected entries (empty = all),
-    /// stream progress, honour the overwrite policy and safety limits, and
-    /// check the cancellation token between entries.
-    fn extract(&mut self, selection: &[EntryPath], dest_dir: &Path, emit: &mut dyn FnMut(Event)) {
+    /// Run an extraction by delegating to core's [`ExtractEngine`], bridging
+    /// progress and cancellation to the UI surface.
+    ///
+    /// Selection semantics differ from core's exact-match list: the GUI treats
+    /// selecting a directory as selecting its whole subtree (`is_under`), so
+    /// the selection is expanded to exact entry paths first.
+    fn extract(
+        &mut self,
+        selection: &[EntryPath],
+        dest_dir: &Path,
+        emit: &mut (dyn FnMut(Event) + Send),
+    ) {
         let Some(top) = self.stack.last().cloned() else {
             emit(Event::Error("no archive open".into()));
             return;
@@ -471,130 +480,67 @@ impl ControllerCore {
                 .filter(|e| selection.iter().any(|s| is_under(e, s)))
                 .collect()
         };
+        let exact: Vec<EntryPath> = selected.iter().map(|e| e.path.clone()).collect();
 
-        let total_bytes: u64 = selected.iter().filter_map(|e| e.uncompressed_size).sum();
-        let limits = self.config.safety_limits;
+        let opts = ExtractOptions {
+            dest_dir: dest_dir.to_path_buf(),
+            overwrite: self.config.overwrite_policy,
+            preserve_mtime: self.config.preserve_mtime,
+            // No archive name is available here (frozen ExtractEngine API);
+            // the GUI does not offer a top-folder option either.
+            create_top_folder: false,
+            limits: self.config.safety_limits,
+        };
 
         // Use a fresh token, or honour one already installed (e.g. the UI
         // cancelled just before the run started).
         let token = self.cancel.lock().unwrap().clone().unwrap_or_default();
         *self.cancel.lock().unwrap() = Some(token.clone());
 
-        let mut report = ExtractReport::default();
-        let mut done_bytes = 0u64;
+        let total_bytes: u64 = selected.iter().filter_map(|e| e.uncompressed_size).sum();
+        let mut bridge = ExtractProgressBridge {
+            emit,
+            total_bytes,
+            done_bytes: 0,
+            entries_done: 0,
+        };
 
-        for entry in &selected {
-            if token.is_cancelled() {
-                *self.cancel.lock().unwrap() = None;
-                emit(Event::Cancelled);
-                return;
-            }
-            // Safety limits (zip-bomb protection, architecture.md §4.8).
-            if done_bytes + entry.uncompressed_size.unwrap_or(0) > limits.max_total_bytes
-                || report.extracted + report.skipped >= limits.max_entries
-            {
-                *self.cancel.lock().unwrap() = None;
-                emit(Event::Error(format!(
-                    "safety limit exceeded: max_total_bytes={}, max_entries={}",
-                    limits.max_total_bytes, limits.max_entries
-                )));
-                return;
-            }
-
-            emit(Event::Progress(ProgressUpdate {
-                current: Some(entry.path.clone()),
-                bytes_done: done_bytes,
-                bytes_total: Some(total_bytes),
-                entries_done: report.extracted,
-            }));
-
-            match self.extract_one(archive.as_ref(), entry, dest_dir) {
-                Ok(Some(n)) => {
-                    done_bytes += n;
-                    report.extracted += 1;
-                }
-                Ok(None) => {
-                    report.skipped += 1;
-                }
-                Err(CoreError::Cancelled) => {
-                    *self.cancel.lock().unwrap() = None;
-                    emit(Event::Cancelled);
-                    return;
-                }
-                Err(e) => report.failed.push((entry.path.clone(), e)),
-            }
-        }
-
+        let result = ExtractEngine::run(archive.as_ref(), &exact, &opts, &mut bridge, &token);
         *self.cancel.lock().unwrap() = None;
-        emit(Event::Done(report));
+        match result {
+            Ok(report) => emit(Event::Done(report)),
+            Err(CoreError::Cancelled) => emit(Event::Cancelled),
+            Err(e) => emit(Event::Error(e.to_string())),
+        }
+    }
+}
+
+/// Bridges core's [`ProgressSink`] callbacks into [`Event::Progress`]
+/// emissions (one event per entry start, matching the previous controller
+/// behaviour so the progress dialog keeps working).
+struct ExtractProgressBridge<'a> {
+    emit: &'a mut (dyn FnMut(Event) + Send),
+    total_bytes: u64,
+    done_bytes: u64,
+    entries_done: u64,
+}
+
+impl ProgressSink for ExtractProgressBridge<'_> {
+    fn on_entry_start(&mut self, path: &EntryPath, _size: Option<u64>) {
+        (self.emit)(Event::Progress(ProgressUpdate {
+            current: Some(path.clone()),
+            bytes_done: self.done_bytes,
+            bytes_total: Some(self.total_bytes),
+            entries_done: self.entries_done,
+        }));
     }
 
-    /// Extract a single entry to `dest_dir`, applying the overwrite policy.
-    ///
-    /// Returns `Ok(Some(bytes))` when written, `Ok(None)` when skipped
-    /// (existing file per policy, or a symlink which is never followed). The
-    /// caller is responsible for counting extracted / skipped entries.
-    fn extract_one(
-        &self,
-        archive: &dyn Archive,
-        entry: &EntryMeta,
-        dest_dir: &Path,
-    ) -> Result<Option<u64>, CoreError> {
-        // Symlinks are never extracted (they could point outside the archive;
-        // see architecture.md §4.8).
-        if entry.kind == NodeKind::Symlink {
-            return Ok(None);
-        }
+    fn on_bytes(&mut self, delta: u64) {
+        self.done_bytes += delta;
+    }
 
-        let dest = dest_dir.join(entry.path.as_str());
-        // Belt and braces: `EntryPath` is already validated (no `..`, no
-        // absolute paths), but double-check the destination stays inside.
-        if !dest.starts_with(dest_dir) {
-            return Err(CoreError::InvalidPath(format!(
-                "entry escapes destination: {}",
-                entry.path.as_str()
-            )));
-        }
-
-        if dest.exists() {
-            let overwrite = match self.config.overwrite_policy {
-                OverwritePolicy::Always => true,
-                OverwritePolicy::Never => false,
-                // M1: `Ask` is treated as "skip existing" until interactive
-                // conflict prompts land with core's ExtractEngine.
-                OverwritePolicy::Ask => false,
-                OverwritePolicy::Newer => {
-                    let dest_mtime = std::fs::metadata(&dest).and_then(|m| m.modified()).ok();
-                    match (entry.mtime, dest_mtime) {
-                        (Some(src), Some(dst)) => src > dst,
-                        _ => false,
-                    }
-                }
-            };
-            if !overwrite {
-                return Ok(None);
-            }
-        }
-
-        if let Some(parent) = dest.parent() {
-            std::fs::create_dir_all(parent)?;
-        }
-
-        // Directory entries: create the folder; nothing to write.
-        if entry.kind == NodeKind::Dir {
-            std::fs::create_dir_all(&dest)?;
-            return Ok(Some(0));
-        }
-
-        let mut sink = std::fs::File::create(&dest)?;
-        let written = archive.extract_to(entry, &mut sink)?;
-        if self.config.preserve_mtime
-            && let Some(mtime) = entry.mtime
-        {
-            let times = std::fs::FileTimes::new().set_modified(mtime);
-            let _ = sink.set_times(times);
-        }
-        Ok(Some(written))
+    fn on_entry_done(&mut self, _path: &EntryPath) {
+        self.entries_done += 1;
     }
 }
 
@@ -729,8 +675,11 @@ mod tests {
         fn node(&self, _path: &EntryPath) -> Result<NodeRef> {
             Err(Error::UnsupportedFeature("fake".into()))
         }
-        fn reader<'s>(&'s self, _entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
-            Err(Error::UnsupportedFeature("fake".into()))
+        fn reader<'s>(&'s self, entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
+            // Core's `ExtractEngine` reads through `Archive::reader`; return the
+            // same synthetic content as `extract_to`.
+            let n = entry.uncompressed_size.unwrap_or(0);
+            Ok(Box::new(std::io::Cursor::new(vec![b'x'; n as usize])))
         }
         fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
             if let Some(hook) = &self.before_extract {
