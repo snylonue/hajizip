@@ -119,15 +119,16 @@ fn utf8_names_list() {
 }
 
 #[test]
-fn gbk_name_falls_back_lossy_but_keeps_raw() {
+fn gbk_name_decodes_via_auto_fallback_and_keeps_raw() {
     let archive = open("gbk.zip").expect("opens");
     let entries = archive.entries().expect("listing works");
     assert_eq!(entries.len(), 1);
     let e = &entries[0];
-    // GBK bytes of 你好 (C4 E3 BA C3), EFS unset: not valid UTF-8.
+    // GBK bytes of 你好 (C4 E3 BA C3), EFS unset: not valid UTF-8, so the
+    // Auto strategy falls back to GBK (research-encoding.md). The original
+    // 4-byte ASCII name "xxxx" was patched to these GBK bytes.
     assert_eq!(e.raw_name, [0xc4, 0xe3, 0xba, 0xc3]);
-    // M1 falls back to lossy UTF-8 for display; raw bytes are preserved.
-    assert!(e.path.as_str().contains('\u{fffd}'));
+    assert_eq!(e.path.as_str(), "你好");
     // The content itself is still readable.
     assert_eq!(
         read_entry(&*archive, e.path.as_str()).expect("reads"),
