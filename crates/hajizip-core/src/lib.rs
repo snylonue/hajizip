@@ -31,5 +31,5 @@ pub use model::{
     CodecId, EntryMeta, EntryPath, FormatKind, Level, Location, NodeKind, Secret, Timestamp,
 };
 pub use navigate::{Frame, Navigator, Walk, WalkItem, WalkOptions, walk};
-pub use registry::FormatRegistry;
+pub use registry::{FormatRegistry, Registry, open};
 pub use source::{ReadSeek, Source};

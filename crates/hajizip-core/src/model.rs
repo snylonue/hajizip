@@ -71,6 +71,35 @@ impl FormatKind {
             FormatKind::Zstd,
         ]
     }
+
+    /// A short human-readable name for UI display.
+    pub fn display_name(self) -> &'static str {
+        match self {
+            FormatKind::Zip => "Zip",
+            FormatKind::SevenZ => "7-Zip",
+            FormatKind::Tar => "tar",
+            FormatKind::Gzip => "gzip",
+            FormatKind::Bzip2 => "bzip2",
+            FormatKind::Xz => "xz",
+            FormatKind::Zstd => "zstd",
+        }
+    }
+
+    /// Common file extensions (without a leading dot) for this format.
+    ///
+    /// Composite forms such as `tar.gz` are not listed here; they are handled
+    /// by combining a container (tar) with a codec (gzip) at a higher level.
+    pub fn extensions(self) -> &'static [&'static str] {
+        match self {
+            FormatKind::Zip => &["zip", "zipx"],
+            FormatKind::SevenZ => &["7z"],
+            FormatKind::Tar => &["tar"],
+            FormatKind::Gzip => &["gz", "gzip"],
+            FormatKind::Bzip2 => &["bz2"],
+            FormatKind::Xz => &["xz"],
+            FormatKind::Zstd => &["zst", "zstd"],
+        }
+    }
 }
 
 /// A compression level. Interpretation is codec-specific.

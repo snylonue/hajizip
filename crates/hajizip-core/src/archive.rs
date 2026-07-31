@@ -29,6 +29,10 @@ pub struct Capabilities {
 }
 
 /// An owned handle to any node (file / dir / nested archive) in the tree.
+///
+/// This is `Box<dyn Node + 'static>`: a node does not borrow the archive but
+/// typically holds a shared (`Arc`) handle to it, so callers (e.g. the GUI)
+/// may store nodes freely.
 pub type NodeRef = Box<dyn Node>;
 
 /// A node within an archive tree.
@@ -69,6 +73,15 @@ pub trait Archive: Send + Sync {
 
     /// Extract a single entry into `sink`, returning the number of bytes written.
     fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64>;
+
+    /// Open an entry that is itself an archive, returning an owned archive.
+    ///
+    /// The result is independent of `self` (`'static`): implementations read
+    /// the entry's bytes into memory or a temporary file (per the configured
+    /// threshold) and parse them. This enables recursive navigation into
+    /// nested archives without lifetime entanglement, and is what `Navigator`
+    /// and the GUI use to descend into nested archives.
+    fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>>;
 
     /// Query the capabilities of this archive.
     fn capabilities(&self) -> Capabilities;
