@@ -51,7 +51,7 @@
                   pkgs.gdk-pixbuf
                   pkgs.atk
                   pkgs.openssl
-                  pkgs.xdo
+                  pkgs.xdotool
                   pkgs.libayatana-appindicator
                   pkgs.librsvg
                 ];
