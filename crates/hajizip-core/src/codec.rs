@@ -1,5 +1,7 @@
 //! Codec abstraction for single-stream compression formats.
 
+pub mod gzip;
+
 use std::io::{Read, Write};
 
 use crate::error::{Error, Result};
