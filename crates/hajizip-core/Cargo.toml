@@ -8,11 +8,20 @@ thiserror = "2"
 # DEFLATE/gzip codec, pure-Rust miniz_oxide backend (see local-doc/research-flate2.md).
 flate2 = { version = "1.1", default-features = false, features = ["miniz_oxide"] }
 # ZIP archive reader (see local-doc/research-zip.md). `deflate-flate2` keeps the
-# DEFLATE backend on flate2's default (miniz_oxide) rather than zlib-rs.
-zip = { version = "8.3", default-features = false, features = ["deflate-flate2"] }
+# DEFLATE backend on flate2's default (miniz_oxide) rather than zlib-rs; `time`
+# enables the `TryFrom<DateTime> for PrimitiveDateTime` conversion we use for
+# mtimes (see local-doc/research-time-filetime.md).
+zip = { version = "8.3", default-features = false, features = ["deflate-flate2", "time"] }
 # tar archive reader (approved: research-tar.md, 方案 A).
 tar = "0.4"
 # Filename decoding for legacy codepages (GBK / Shift-JIS / Big5; see
 # local-doc/research-encoding.md). CP437 is deferred per maintainer.
 encoding_rs = "0.8"
+# Date/time (replaces hand-rolled civil-date math; already a transitive dep of
+# zip, see local-doc/research-time-filetime.md).
+time = "0.3"
+# Setting file mtimes without write permission (utimensat / FILE_WRITE_ATTRIBUTES;
+# already a transitive dep of tar, approved with rationale in
+# local-doc/research-time-filetime.md).
+filetime = "0.2"
 

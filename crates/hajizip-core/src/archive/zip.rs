@@ -8,7 +8,7 @@
 use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
-use std::time::{Duration, SystemTime};
+use std::time::SystemTime;
 
 use crate::archive::{
     Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, decode_name,
@@ -101,10 +101,7 @@ impl ZipArchive {
             } else {
                 NodeKind::File
             };
-            let mtime = file
-                .last_modified()
-                .filter(|dt| dt.is_valid())
-                .map(|dt| zip_datetime_to_system_time(&dt));
+            let mtime = file.last_modified().and_then(zip_datetime_to_system_time);
             let encrypted = file.encrypted();
             any_encrypted |= encrypted;
             let meta = EntryMeta {
@@ -271,28 +268,15 @@ impl Archive for ZipArchive {
 }
 
 /// Convert a zip MS-DOS timestamp to a `SystemTime`.
-fn zip_datetime_to_system_time(dt: &zip::DateTime) -> SystemTime {
-    let days = days_from_civil(
-        i64::from(dt.year()),
-        u32::from(dt.month()),
-        u32::from(dt.day()),
-    );
-    let secs = days * 86_400
-        + i64::from(dt.hour()) * 3_600
-        + i64::from(dt.minute()) * 60
-        + i64::from(dt.second());
-    SystemTime::UNIX_EPOCH + Duration::from_secs(secs as u64)
-}
-
-/// Days since 1970-01-01 for a civil date (Howard Hinnant's algorithm).
-fn days_from_civil(y: i64, m: u32, d: u32) -> i64 {
-    let y = if m <= 2 { y - 1 } else { y };
-    let era = if y >= 0 { y } else { y - 399 } / 400;
-    let yoe = y - era * 400;
-    let mp = i64::from(if m > 2 { m - 3 } else { m + 9 });
-    let doy = (153 * mp + 2) / 5 + i64::from(d) - 1;
-    let doe = yoe * 365 + yoe / 4 - yoe / 100 + doy;
-    era * 146_097 + doe - 719_468
+///
+/// The zip crate implements `TryFrom<zip::DateTime> for time::PrimitiveDateTime`
+/// (behind its `time` feature); we reuse it instead of hand-rolling civil-date
+/// math (see `local-doc/research-time-filetime.md`). Invalid (out-of-range)
+/// dates fail the conversion and are filtered by the caller.
+fn zip_datetime_to_system_time(dt: zip::DateTime) -> Option<SystemTime> {
+    time::PrimitiveDateTime::try_from(dt)
+        .ok()
+        .map(|pdt| SystemTime::from(pdt.assume_utc()))
 }
 
 /// Map a `zip` crate error onto the core error model.
@@ -329,22 +313,15 @@ mod tests {
         assert!(!fmt.matches(b"junk", None));
     }
 
-    /// Cross-check the civil-date conversion against known epoch values.
-    #[test]
-    fn days_from_civil_matches_known_epochs() {
-        assert_eq!(days_from_civil(1970, 1, 1), 0);
-        assert_eq!(days_from_civil(1980, 1, 1), 3652); // zip MS-DOS epoch
-        assert_eq!(days_from_civil(2000, 1, 1), 10_957);
-        assert_eq!(days_from_civil(2024, 2, 29), 19_782); // leap day
-    }
-
+    /// Cross-check zip MS-DOS timestamps convert to the expected epoch values.
     #[test]
     fn zip_datetime_converts_to_system_time() {
-        // 2024-02-29 12:34:56 (a valid MS-DOS date, 1980..2107).
+        // 2024-02-29 12:34:56 (a valid MS-DOS date, 1980..2107); 2024-02-29 is
+        // 19,782 days after the epoch (verified independently).
         let dt = zip::DateTime::from_date_and_time(2024, 2, 29, 12, 34, 56).expect("valid date");
-        let st = zip_datetime_to_system_time(&dt);
+        let st = zip_datetime_to_system_time(dt).expect("in range");
         let expected = SystemTime::UNIX_EPOCH
-            + Duration::from_secs(19_782 * 86_400 + 12 * 3_600 + 34 * 60 + 56);
+            + std::time::Duration::from_secs(19_782 * 86_400 + 12 * 3_600 + 34 * 60 + 56);
         assert_eq!(st, expected);
     }
 }

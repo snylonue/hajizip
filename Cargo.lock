@@ -1817,9 +1817,11 @@ name = "hajizip-core"
 version = "0.1.0"
 dependencies = [
  "encoding_rs",
+ "filetime",
  "flate2",
  "tar",
  "thiserror 2.0.19",
+ "time",
  "zip",
 ]
 
@@ -1833,6 +1835,7 @@ dependencies = [
  "hajizip-core",
  "rfd",
  "serde",
+ "time",
  "tokio",
  "toml",
 ]
@@ -2761,6 +2764,15 @@ dependencies = [
  "proc-macro2",
  "quote",
  "syn 2.0.119",
+]
+
+[[package]]
+name = "num_threads"
+version = "0.1.7"
+source = "registry+https://github.com/rust-lang/crates.io-index"
+checksum = "5c7398b9c8b70908f6371f47ed36737907c87c52af34c268fed0bf0ceb92ead9"
+dependencies = [
+ "libc",
 ]
 
 [[package]]
@@ -4362,7 +4374,10 @@ source = "registry+https://github.com/rust-lang/crates.io-index"
 checksum = "3e1d5e639ff6bab73cb6885cc7e7b1de96c3f32c68ec55f3952614bec1092244"
 dependencies = [
  "deranged",
+ "js-sys",
+ "libc",
  "num-conv",
+ "num_threads",
  "powerfmt",
  "serde_core",
  "time-core",
@@ -5564,6 +5579,7 @@ dependencies = [
  "flate2",
  "indexmap",
  "memchr",
+ "time",
  "typed-path",
 ]
 
