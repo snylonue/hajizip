@@ -16,3 +16,7 @@ rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
 dirs = "6"
 serde = { version = "1", features = ["derive"] }
 toml = "0.8"
+# Date/time formatting for mtime labels (replaces hand-rolled civil-date math;
+# already a transitive dep of hajizip-core's zip, see
+# local-doc/research-time-filetime.md). `local-offset` enables local-time display.
+time = { version = "0.3", features = ["local-offset"] }

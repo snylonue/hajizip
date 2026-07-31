@@ -6,7 +6,7 @@
 //! any UI or threads.
 
 use std::collections::{BTreeMap, HashSet};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::time::SystemTime;
 
 use hajizip_core::{EntryMeta, EntryPath, NodeKind};
 
@@ -141,39 +141,28 @@ pub fn kind_label(kind: NodeKind) -> &'static str {
     }
 }
 
-/// Format an optional timestamp as `YYYY-MM-DD HH:MM` (local time zone offset
-/// intentionally not applied; a plain civil date keeps this dependency-free).
+/// Format an optional timestamp as `YYYY-MM-DD HH:MM` in the local time zone
+/// (falls back to UTC when the local offset is unavailable). Uses the `time`
+/// crate instead of hand-rolled civil-date math (see
+/// `local-doc/research-time-filetime.md`).
 pub fn time_label(mtime: Option<SystemTime>) -> String {
     let Some(mtime) = mtime else {
         return "—".to_string();
     };
-    let secs = mtime
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_secs())
-        .unwrap_or(0);
-    let (y, mo, d, h, mi) = civil_from_epoch(secs);
-    format!("{y:04}-{mo:02}-{d:02} {h:02}:{mi:02}")
+    let offset = time::UtcOffset::current_local_offset().unwrap_or(time::UtcOffset::UTC);
+    format_civil(time::OffsetDateTime::from(mtime).to_offset(offset))
 }
 
-/// Convert Unix seconds to (year, month, day, hour, minute) civil time using
-/// Howard Hinnant's algorithm; pure integer math, no external crates.
-fn civil_from_epoch(secs: u64) -> (i64, u32, u32, u32, u32) {
-    let days = (secs / 86_400) as i64;
-    let rem = secs % 86_400;
-    let (h, mi) = ((rem / 3600) as u32, ((rem % 3600) / 60) as u32);
-
-    // Civil-from-days (Howard Hinnant).
-    let z = days + 719_468;
-    let era = if z >= 0 { z } else { z - 146_096 } / 146_097;
-    let doe = z - era * 146_097; // [0, 146096]
-    let yoe = (doe - doe / 1460 + doe / 36_524 - doe / 146_096) / 365; // [0, 399]
-    let y = yoe + era * 400;
-    let doy = doe - (365 * yoe + yoe / 4 - yoe / 100); // [0, 365]
-    let mp = (5 * doy + 2) / 153; // [0, 11]
-    let d = (doy - (153 * mp + 2) / 5 + 1) as u32; // [1, 31]
-    let m = if mp < 10 { mp + 3 } else { mp - 9 } as u32; // [1, 12]
-    let y = if m <= 2 { y + 1 } else { y };
-    (y, m, d, h, mi)
+/// Format a date-time as `YYYY-MM-DD HH:MM` (no seconds).
+fn format_civil(odt: time::OffsetDateTime) -> String {
+    format!(
+        "{:04}-{:02}-{:02} {:02}:{:02}",
+        odt.year(),
+        u8::from(odt.month()),
+        odt.day(),
+        odt.hour(),
+        odt.minute(),
+    )
 }
 
 #[cfg(test)]
@@ -257,10 +246,14 @@ mod tests {
     }
 
     #[test]
-    fn time_label_known_epoch() {
-        // 2026-01-08 11:04:05 UTC (verified with `date -u -d @1767870245`).
-        let t = UNIX_EPOCH + std::time::Duration::new(1_767_870_245, 0);
-        assert_eq!(time_label(Some(t)), "2026-01-08 11:04");
+    fn time_label_formats_civil_time() {
+        // Build a fixed-offset date-time directly (independent of the test
+        // machine's time zone): 2026-01-08 11:04:05 +08:00.
+        let odt = time::Date::from_calendar_date(2026, time::Month::January, 8)
+            .expect("valid date")
+            .with_time(time::Time::from_hms(11, 4, 5).expect("valid time"))
+            .assume_offset(time::UtcOffset::from_hms(8, 0, 0).expect("valid offset"));
+        assert_eq!(format_civil(odt), "2026-01-08 11:04");
         assert_eq!(time_label(None), "—");
     }
 }
