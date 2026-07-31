@@ -1,10 +1,11 @@
 # Build the Linux and Windows packages via Nix and publish a GitHub Release.
 #
 # Triggers:
-#   - push of a tag like `v0.1.0`  -> build + publish a release with assets
-#   - manual `workflow_dispatch`    -> build + publish a PRE-release
+#   - push to `master`          -> build + publish a PRE-release (every push)
+#   - push of a tag `v0.1.0`     -> build + publish a release with assets
+#   - manual `workflow_dispatch` -> build + publish a PRE-release
 #
-# Published asset (both triggers):
+# Published asset (all triggers):
 #   hajizip-windows-x86_64.zip  (hajizip-gui.exe + WebView2Loader.dll, ready
 #                                to run on Windows 10/11 with the WebView2
 #                                Runtime; built via pkgsCross.mingwW64)
@@ -15,6 +16,8 @@ name: build-and-release
 
 on:
   push:
+    branches:
+      - master
     tags:
       - "v*"
   workflow_dispatch:
@@ -60,8 +63,11 @@ jobs:
           files: dist/hajizip-windows-x86_64.zip
           generate_release_notes: true
 
-      - name: Publish GitHub Pre-Release (manual dispatch)
-        if: github.event_name == 'workflow_dispatch'
+      # Every push to master (non-tag) publishes a pre-release.
+      - name: Publish GitHub Pre-Release (push to master / manual dispatch)
+        if: >-
+          github.event_name == 'workflow_dispatch' ||
+          (github.event_name == 'push' && !startsWith(github.ref, 'refs/tags/'))
         uses: softprops/action-gh-release@v2
         with:
           files: dist/hajizip-windows-x86_64.zip
