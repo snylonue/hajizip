@@ -8,3 +8,11 @@ hajizip-core = { path = "../hajizip-core" }
 dioxus = { version = "0.7", features = ["desktop"] }
 anyhow = "1"
 tokio = { version = "1", features = ["sync"] }
+# Native file/folder dialogs (research: local-doc/research-rfd.md).
+# default-features = false + xdg-portal: Linux builds without GTK3/wayland
+# system libs; macOS/Windows use their native backends unconditionally.
+rfd = { version = "0.17", default-features = false, features = ["xdg-portal"] }
+# Config persistence (research: local-doc/research-config-persistence.md).
+dirs = "6"
+serde = { version = "1", features = ["derive"] }
+toml = "0.8"

@@ -1806,8 +1806,12 @@ version = "0.1.0"
 dependencies = [
  "anyhow",
  "dioxus",
+ "dirs",
  "hajizip-core",
+ "rfd",
+ "serde",
  "tokio",
+ "toml",
 ]
 
 [[package]]
