@@ -13,7 +13,7 @@ TARDIR="$SCRIPT_DIR/../tar"
 mkdir -p "$TARDIR"
 OUT="$(cd "$TARDIR" && pwd)"
 cd "$OUT"
-rm -f ./*.tar ./*.tar.gz ./*.tgz
+rm -f ./*.tar ./*.tar.gz ./*.tgz ./*.tar.xz
 
 mkdir -p "$TMP/build/dir"
 printf 'Hello, hajizip!\n' > "$TMP/build/a.txt"
@@ -28,6 +28,9 @@ ZERO=(--mtime=@0 --owner=0 --group=0 --numeric-owner)
 gzip -n -9 -c "$OUT/basic.tar" > "$OUT/basic.tar.gz"
 cp "$OUT/basic.tar.gz" "$OUT/hello.tgz"
 
+# --- basic.tar.xz: xz-compressed tar -----------------------------------------
+xz -9 -c "$OUT/basic.tar" > "$OUT/basic.tar.xz"
+
 # --- long.tar: names > 100 chars (PAX/GNU extension) -------------------------
 DEEP="deep/$(printf 'x%.0s' $(seq 1 60))/$(printf 'y%.0s' $(seq 1 50)).txt"
 mkdir -p "$TMP/build/deep/$(printf 'x%.0s' $(seq 1 60))"
@@ -39,7 +42,11 @@ ln -sf /etc/passwd "$TMP/build/link"
 (cd "$TMP/build" && tar "${ZERO[@]}" -cf "$OUT/sym.tar" link)
 
 # --- abs.tar: absolute path (must be normalized to relative on listing) ------
-tar "${ZERO[@]}" --absolute-names -cf "$OUT/abs.tar" "$TMP/build/a.txt"
+# The stored name keeps an absolute prefix (raw bytes start with `/`); a
+# `--transform` rewrites the tmpdir part so regeneration is byte-deterministic.
+(cd "$TMP" && tar "${ZERO[@]}" --absolute-names \
+    --transform='s|^/tmp/[^/]*/build/|/archive/build/|' \
+    -cf "$OUT/abs.tar" "$TMP/build/a.txt")
 
 # --- slip.tar: entry with a `..` component -----------------------------------
 printf 'evil\n' > "$TMP/build/evil.txt"
@@ -80,6 +87,10 @@ note = "gzip-compressed tar"
 name = ["a.txt", "dir/", "dir/b.txt"]
 note = "same content as basic.tar.gz, .tgz extension"
 
+[basic.tar.xz]
+name = ["a.txt", "dir/", "dir/b.txt"]
+note = "xz-compressed tar (M2)"
+
 [long.tar]
 name = ["deep/xxx.../yyy....txt"]
 note = "entry name > 100 chars (PAX/GNU long-name extension)"
@@ -110,4 +121,4 @@ note = "10 000 small entries"
 EOF
 
 echo "generated:"
-ls -l ./*.tar ./*.tar.gz ./*.tgz
+ls -l ./*.tar ./*.tar.gz ./*.tgz ./*.tar.xz

@@ -1,5 +1,6 @@
 //! Archive abstraction for container formats that hold a file tree.
 
+pub mod sevenz;
 pub mod tar;
 pub mod zip;
 
@@ -26,14 +27,16 @@ pub(crate) fn looks_like_tar(head: &[u8]) -> bool {
     head.get(257..262).is_some_and(|m| m == b"ustar")
 }
 
-/// Whether the head bytes look like a nested archive (zip, tar, or gzip).
-/// Used to mark entries as [`NodeKind::Archive`] so walk/Navigator can
+/// Whether the head bytes look like a nested archive (zip, 7z, tar, gzip or
+/// xz). Used to mark entries as [`NodeKind::Archive`] so walk/Navigator can
 /// recurse into them.
 pub(crate) fn looks_like_nested_archive(head: &[u8]) -> bool {
     head.starts_with(b"PK\x03\x04")
         || head.starts_with(b"PK\x05\x06")
+        || head.starts_with(b"7z\xbc\xaf\x27\x1c")
         || looks_like_tar(head)
         || head.starts_with(&[0x1f, 0x8b])
+        || head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00])
 }
 
 /// Options controlling how an archive is opened.
@@ -220,9 +223,29 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
             "nested archive exceeds in-memory open cap".into(),
         ));
     }
-    // Compressed: decompress and expect tar inside (e.g. tar.gz-in-archive).
+    // Compressed single-stream: decompress and expect tar inside
+    // (e.g. tar.gz / tar.xz inside an archive).
     if bytes.starts_with(&[0x1f, 0x8b]) {
         let mut reader = crate::codec::gzip::GzipCodec.decompress(Box::new(bytes.as_slice()))?;
+        let mut inner = Vec::new();
+        reader
+            .by_ref()
+            .take(IN_MEMORY_OPEN_CAP + 1)
+            .read_to_end(&mut inner)?;
+        if inner.len() as u64 > IN_MEMORY_OPEN_CAP {
+            return Err(crate::error::Error::UnsupportedFeature(
+                "nested archive exceeds in-memory open cap".into(),
+            ));
+        }
+        if looks_like_tar(&inner) {
+            return tar::TarFormat.open(Source::Memory(inner), opts);
+        }
+        return Err(crate::error::Error::UnsupportedFormat(
+            "decompressed nested entry is not a recognized archive".into(),
+        ));
+    }
+    if bytes.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
+        let mut reader = crate::codec::xz::XzCodec.decompress(Box::new(bytes.as_slice()))?;
         let mut inner = Vec::new();
         reader
             .by_ref()
@@ -245,6 +268,9 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
     }
     if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
         return zip::ZipFormat.open(Source::Memory(bytes), opts);
+    }
+    if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+        return sevenz::SevenZipFormat.open(Source::Memory(bytes), opts);
     }
     Err(crate::error::Error::UnsupportedFormat(
         "nested entry is not a recognized archive format".into(),

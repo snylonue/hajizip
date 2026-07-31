@@ -12,6 +12,10 @@ note = "gzip-compressed tar"
 name = ["a.txt", "dir/", "dir/b.txt"]
 note = "same content as basic.tar.gz, .tgz extension"
 
+[basic.tar.xz]
+name = ["a.txt", "dir/", "dir/b.txt"]
+note = "xz-compressed tar (M2)"
+
 [long.tar]
 name = ["deep/xxx.../yyy....txt"]
 note = "entry name > 100 chars (PAX/GNU long-name extension)"

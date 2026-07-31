@@ -6,6 +6,7 @@ use std::path::{Path, PathBuf};
 
 use hajizip_core::archive::tar::TarFormat;
 use hajizip_core::codec::gzip::GzipFormat;
+use hajizip_core::codec::xz::XzFormat;
 use hajizip_core::registry::Registry;
 use hajizip_core::source::Source;
 use hajizip_core::{Archive, EntryPath, NodeKind, OpenOptions};
@@ -21,11 +22,12 @@ fn fixture(name: &str) -> PathBuf {
     fixture_dir().join(name)
 }
 
-/// A registry with the tar archive and gzip codec registered (the M1 set).
+/// A registry with the tar archive and gzip/xz codecs registered.
 fn registry() -> Registry {
     Registry::new()
         .register_archive(TarFormat)
         .register_codec(GzipFormat)
+        .register_codec(XzFormat)
 }
 
 /// Open a fixture through the registry (auto-detect, incl. tar.gz chaining).
@@ -87,6 +89,12 @@ fn tgz_opens_by_content_magic() {
     // `.tgz` bytes are gzip; the extension is never used as a tar hint when
     // the head signals compression.
     let archive = open("hello.tgz").expect("opens");
+    assert_basic(&*archive);
+}
+
+#[test]
+fn tar_xz_opens_through_registry_chaining() {
+    let archive = open("basic.tar.xz").expect("opens");
     assert_basic(&*archive);
 }
 

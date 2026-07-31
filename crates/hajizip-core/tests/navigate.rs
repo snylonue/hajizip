@@ -28,13 +28,15 @@ fn open_root(path: &Path) -> Navigator {
     .expect("opens")
 }
 
-/// The core's built-in format set (zip / tar / gzip), as the composition root
-/// would provide it to `Navigator::open_root`.
+/// The core's built-in format set (zip / 7z / tar / gzip / xz), as the
+/// composition root would provide it to `Navigator::open_root`.
 fn default_registry() -> hajizip_core::Registry {
     hajizip_core::Registry::new()
         .register_archive(hajizip_core::archive::zip::ZipFormat)
+        .register_archive(hajizip_core::archive::sevenz::SevenZipFormat)
         .register_archive(hajizip_core::archive::tar::TarFormat)
         .register_codec(hajizip_core::codec::gzip::GzipFormat)
+        .register_codec(hajizip_core::codec::xz::XzFormat)
 }
 
 fn entry_by_path<'a>(entries: &'a [EntryMeta], path: &str) -> &'a EntryMeta {
@@ -139,6 +141,27 @@ fn open_root_opens_tar_gz_via_builtin_registry() {
 }
 
 #[test]
+fn open_root_opens_tar_xz_via_builtin_registry() {
+    let nav = open_root(&fixture("tar/basic.tar.xz"));
+    let archive = nav.current().expect("current");
+    assert_eq!(entry_paths(archive), ["a.txt", "dir", "dir/b.txt"]);
+}
+
+#[test]
+fn open_root_opens_7z() {
+    let nav = open_root(&fixture("7z/basic.7z"));
+    let archive = nav.current().expect("current");
+    assert_eq!(entry_paths(archive), ["a.txt", "dir", "dir/b.txt"]);
+}
+
+#[test]
+fn open_root_opens_zstd_7z() {
+    let nav = open_root(&fixture("7z/zstd.7z"));
+    let archive = nav.current().expect("current");
+    assert_eq!(entry_paths(archive), ["a.txt", "dir", "dir/b.txt"]);
+}
+
+#[test]
 fn open_root_rejects_unknown_format() {
     match Navigator::open_root(
         &default_registry(),
@@ -185,6 +208,28 @@ fn enter_nested_archive_pushes_level_and_back_pops() {
         entry_paths(nav.current().expect("current")),
         ["inner.zip", "top.txt"]
     );
+}
+
+#[test]
+fn enter_nested_7z_pushes_level_and_back_pops() {
+    // nested.7z holds four nested archives; entering one shows its contents.
+    let mut nav = open_root(&fixture("7z/nested.7z"));
+    let entries = nav.current().expect("current").entries().expect("entries");
+    let inner = entry_by_path(&entries, "inner.tar.xz");
+    assert_eq!(
+        inner.kind,
+        NodeKind::Archive,
+        "nested tar.xz must be marked"
+    );
+
+    nav.enter(inner).expect("enter nested tar.xz");
+    assert_eq!(nav.breadcrumb().len(), 2);
+    assert_eq!(
+        entry_paths(nav.current().expect("current")),
+        ["a.txt", "dir", "dir/b.txt"]
+    );
+    nav.back().expect("back");
+    assert_eq!(nav.breadcrumb().len(), 1);
 }
 
 #[test]
