@@ -3,7 +3,6 @@
 use std::sync::Arc;
 
 use crate::archive::{Archive, OpenOptions};
-use crate::codec::gzip::GzipFormat;
 use crate::encoding::FilenameEncoding;
 use crate::error::{Error, Result};
 use crate::extract::SafetyLimits;
@@ -32,14 +31,11 @@ pub struct Navigator {
 impl Navigator {
     /// Open a top-level archive and create a navigator for it.
     ///
-    /// The core's built-in format set (zip / tar / gzip) is used. Applications
-    /// that compose their own extended `Registry` (e.g. the GUI) should open
-    /// the top level themselves and rely on `enter`/`back` here.
-    pub fn open_root(src: Source, opts: &OpenOptions) -> Result<Self> {
-        let registry = Registry::new()
-            .register_archive(crate::archive::zip::ZipFormat)
-            .register_archive(crate::archive::tar::TarFormat)
-            .register_codec(GzipFormat);
+    /// Detection and opening are delegated to the application's composed
+    /// [`Registry`] (the composition root), so formats registered by the app
+    /// (e.g. the GUI's) are honored; `open_root` itself holds no built-in
+    /// format list.
+    pub fn open_root(registry: &Registry, src: Source, opts: &OpenOptions) -> Result<Self> {
         let archive = registry.open_archive(src, opts)?;
         Ok(Self {
             stack: vec![Frame {
@@ -235,19 +231,33 @@ impl Iterator for Walk<'_> {
                 // adjustment could thread it through).
                 encoding: FilenameEncoding::Auto,
             };
-            let nested = self
+            let nested = match self
                 .stack
                 .last()
-                .and_then(|l| l.owner.open_nested(&entry, &nested_opts).ok());
+                .map(|l| l.owner.open_nested(&entry, &nested_opts))
+            {
+                Some(Ok(nested)) => Some(nested),
+                Some(Err(e)) => {
+                    // Report the failure as a yielded error instead of silently
+                    // dropping the nested archive; the first failure wins.
+                    self.pending_error.get_or_insert(e);
+                    None
+                }
+                None => None,
+            };
             if let Some(nested) = nested {
-                let nested_entries = nested.entries().unwrap_or_default();
-                self.stack.push(Level {
-                    owner: Owner::Owned(nested),
-                    entries: nested_entries,
-                    pos: 0,
-                    prefix: format!("{prefix}{}/", entry.path),
-                    depth: depth + 1,
-                });
+                match nested.entries() {
+                    Ok(nested_entries) => self.stack.push(Level {
+                        owner: Owner::Owned(nested),
+                        entries: nested_entries,
+                        pos: 0,
+                        prefix: format!("{prefix}{}/", entry.path),
+                        depth: depth + 1,
+                    }),
+                    Err(e) => {
+                        self.pending_error.get_or_insert(e);
+                    }
+                }
             }
         }
 

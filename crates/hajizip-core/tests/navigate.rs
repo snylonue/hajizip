@@ -4,8 +4,8 @@ use std::path::{Path, PathBuf};
 
 use hajizip_core::source::Source;
 use hajizip_core::{
-    Archive, EntryMeta, EntryPath, Error, Location, Navigator, NodeKind, OpenOptions, WalkOptions,
-    walk,
+    Archive, Capabilities, EntryMeta, EntryPath, Error, Location, Navigator, NodeKind, NodeRef,
+    OpenOptions, WalkOptions, walk,
 };
 
 fn fixture_dir() -> PathBuf {
@@ -20,7 +20,21 @@ fn fixture(name: &str) -> PathBuf {
 }
 
 fn open_root(path: &Path) -> Navigator {
-    Navigator::open_root(Source::Path(path.to_path_buf()), &OpenOptions::default()).expect("opens")
+    Navigator::open_root(
+        &default_registry(),
+        Source::Path(path.to_path_buf()),
+        &OpenOptions::default(),
+    )
+    .expect("opens")
+}
+
+/// The core's built-in format set (zip / tar / gzip), as the composition root
+/// would provide it to `Navigator::open_root`.
+fn default_registry() -> hajizip_core::Registry {
+    hajizip_core::Registry::new()
+        .register_archive(hajizip_core::archive::zip::ZipFormat)
+        .register_archive(hajizip_core::archive::tar::TarFormat)
+        .register_codec(hajizip_core::codec::gzip::GzipFormat)
 }
 
 fn entry_by_path<'a>(entries: &'a [EntryMeta], path: &str) -> &'a EntryMeta {
@@ -47,6 +61,63 @@ fn walk_locations(archive: &dyn Archive, opts: WalkOptions) -> Vec<String> {
         .collect()
 }
 
+/// A fake archive whose only entry looks like a nested archive but fails to
+/// open; `walk` must surface the failure rather than silently dropping it.
+struct BrokenNested;
+
+impl Archive for BrokenNested {
+    fn entries(&self) -> hajizip_core::Result<Vec<EntryMeta>> {
+        Ok(vec![EntryMeta {
+            path: EntryPath::new("inner.zip").unwrap(),
+            raw_name: b"inner.zip".to_vec(),
+            kind: NodeKind::Archive,
+            uncompressed_size: Some(1),
+            compressed_size: None,
+            mtime: None,
+            mode: None,
+            crc: None,
+            encrypted: false,
+            comment: None,
+        }])
+    }
+
+    fn root(&self) -> hajizip_core::Result<NodeRef> {
+        Err(Error::UnsupportedFeature("fake".into()))
+    }
+
+    fn node(&self, _p: &EntryPath) -> hajizip_core::Result<NodeRef> {
+        Err(Error::UnsupportedFeature("fake".into()))
+    }
+
+    fn reader<'s>(
+        &'s self,
+        _e: &EntryMeta,
+    ) -> hajizip_core::Result<Box<dyn std::io::Read + Send + 's>> {
+        Err(Error::UnsupportedFeature("fake".into()))
+    }
+
+    fn extract_to(&self, _e: &EntryMeta, _w: &mut dyn std::io::Write) -> hajizip_core::Result<u64> {
+        Err(Error::UnsupportedFeature("fake".into()))
+    }
+
+    fn open_nested(
+        &self,
+        _e: &EntryMeta,
+        _o: &OpenOptions,
+    ) -> hajizip_core::Result<Box<dyn Archive>> {
+        Err(Error::CorruptArchive("broken inner archive".into()))
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        Capabilities {
+            random_access: true,
+            encrypted: false,
+            needs_password: false,
+            can_write: false,
+        }
+    }
+}
+
 // ---------------------------------------------------------------------------
 // Navigator
 // ---------------------------------------------------------------------------
@@ -70,6 +141,7 @@ fn open_root_opens_tar_gz_via_builtin_registry() {
 #[test]
 fn open_root_rejects_unknown_format() {
     match Navigator::open_root(
+        &default_registry(),
         Source::Path(fixture("zip/corrupt.zip")),
         &Default::default(),
     ) {
@@ -231,6 +303,24 @@ fn walk_recurse_descends_into_nested_archives() {
             "top.txt",
         ]
     );
+}
+
+#[test]
+fn walk_reports_nested_open_failures() {
+    let opts = WalkOptions {
+        recurse_nested_archives: true,
+        ..Default::default()
+    };
+    let mut items = walk(&BrokenNested, opts);
+    // The nested entry itself is yielded first...
+    let first = items.next().expect("first item").expect("ok");
+    assert_eq!(first.meta.path.as_str(), "inner.zip");
+    // ...then the open failure is reported instead of being swallowed.
+    match items.next() {
+        Some(Err(Error::CorruptArchive(_))) => {}
+        other => panic!("expected a reported nested-open error, got {other:?}"),
+    }
+    assert!(items.next().is_none(), "no further items");
 }
 
 #[test]
