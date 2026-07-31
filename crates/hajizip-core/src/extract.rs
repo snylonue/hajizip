@@ -1,6 +1,5 @@
 //! Extraction engine shared by the GUI and any future CLI.
 
-use std::fs::FileTimes;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
 use std::sync::Arc;
@@ -342,9 +341,12 @@ fn copy_with_progress(
 }
 
 /// Set the modification time of an existing file.
+///
+/// Uses `filetime` (`utimensat` on Unix, `FILE_WRITE_ATTRIBUTES` on Windows)
+/// so a read-only destination file does not need write permission just to
+/// update its mtime (see `local-doc/research-time-filetime.md`).
 fn set_modified(path: &Path, t: SystemTime) -> Result<()> {
-    let file = std::fs::File::options().write(true).open(path)?;
-    file.set_times(FileTimes::new().set_modified(t))?;
+    filetime::set_file_mtime(path, filetime::FileTime::from_system_time(t))?;
     Ok(())
 }
 
