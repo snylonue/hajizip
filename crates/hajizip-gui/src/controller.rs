@@ -3,31 +3,30 @@
 //! The controller is deliberately split into two halves:
 //!
 //! * [`ControllerCore`] — a pure, synchronous state machine that turns an
-//!   [`Intent`] into a list of [`Event`]s. It owns the composed [`Registry`]
-//!   (the composition root) and the current archive handle. It contains no
-//!   threads and no Dioxus types, so it can be unit-tested with fake
-//!   `Archive` / `ArchiveFormat` implementations (see `test-plan.md` §11).
+//!   [`Intent`] into a stream of [`Event`]s via an emit callback. It owns the
+//!   composed [`Registry`] (composition root), a client-side navigation stack
+//!   built on the frozen `Archive` API (core's `Navigator` is a placeholder
+//!   until M1), and the configuration. It contains no threads and no Dioxus
+//!   types, so it can be unit-tested with fake `Archive` / `ArchiveFormat`
+//!   implementations (see `test-plan.md` §11).
 //! * [`spawn_controller`] — the transport layer used by the UI. It runs a
 //!   [`ControllerCore`] on a dedicated worker thread and bridges intents and
 //!   events to the UI thread over channels, so long-running core calls never
-//!   block the interface (see `architecture.md` §5.5).
+//!   block the interface (see `architecture.md` §5.5). Extraction progress is
+//!   streamed through the emit callback, and cancellation goes through a
+//!   shared token slot that the UI can trigger without waiting for the worker.
 
 use std::path::{Path, PathBuf};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 
 use hajizip_core::{
     Archive, CancellationToken, EntryMeta, EntryPath, Error as CoreError, ExtractReport,
-    FilenameEncoding, OpenOptions, Registry, Secret, Source,
+    FilenameEncoding, NodeKind, OpenOptions, OverwritePolicy, Registry, Secret, Source,
 };
 
 use crate::config::AppConfig;
 
 /// A user intention submitted to the controller.
-//
-// Only `Open` is wired into the UI in M0; the remaining variants are part of
-// the frozen controller contract and are exercised from M1 onwards (see
-// architecture.md §5). They are kept now so the Intent surface is stable.
-#[allow(dead_code)]
 #[derive(Debug, Clone)]
 pub enum Intent {
     /// Open a top-level archive from disk, optionally with a password.
@@ -37,32 +36,41 @@ pub enum Intent {
         /// Password for encrypted archives, if any.
         password: Option<String>,
     },
-    /// Enter a child directory or nested archive.
+    /// Enter a child directory or a nested archive.
     Enter {
-        /// Path of the entry to enter.
+        /// Path of the entry to enter (relative to the current archive).
         path: EntryPath,
     },
-    /// Go back up one navigation level.
+    /// Go back up one level (parent directory or outer archive).
     Back,
+    /// Jump to a breadcrumb segment (identified by its index).
+    JumpTo {
+        /// Index into the breadcrumb emitted in the last `Navigated` event.
+        depth: usize,
+    },
     /// Extract a selection of entries (empty means all) to a directory.
     Extract {
-        /// Entries to extract; empty means the whole archive.
+        /// Entries to extract; empty means the whole current archive.
         selection: Vec<EntryPath>,
         /// Destination directory.
         dest_dir: PathBuf,
     },
-    /// Cancel the in-flight operation.
+    /// Cancel the in-flight operation (extraction).
+    ///
+    /// The UI uses [`ControllerHandle::cancel`] directly (no worker round
+    /// trip); this variant is kept as part of the stable intent surface.
+    #[allow(dead_code)]
     Cancel,
     /// Change the filename decoding strategy and refresh the view.
     SetEncoding(FilenameEncoding),
+    /// Change the overwrite policy used by extraction.
+    SetOverwrite(OverwritePolicy),
+    /// Change whether extraction preserves entry modification times.
+    SetPreserveMtime(bool),
 }
 
 /// A progress snapshot emitted during a long-running operation.
-//
-// Populated once extraction reports progress (M1+); part of the stable Event
-// contract today.
-#[allow(dead_code)]
-#[derive(Debug, Clone, Default)]
+#[derive(Debug, Clone, PartialEq, Eq, Default)]
 pub struct ProgressUpdate {
     /// Path of the entry currently being processed, if any.
     pub current: Option<EntryPath>,
@@ -74,18 +82,35 @@ pub struct ProgressUpdate {
     pub entries_done: u64,
 }
 
+/// A clickable breadcrumb segment emitted in `Navigated` events.
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct BreadcrumbSegment {
+    /// Display label (archive file name, nested-archive entry name, or a
+    /// directory component).
+    pub label: String,
+    /// Frame index in the navigation stack this segment points into.
+    pub frame: usize,
+    /// Directory within that frame (None = frame root).
+    pub focus: Option<EntryPath>,
+}
+
 /// An event produced by the controller for the UI to render.
-//
-// `Progress` / `Done` are emitted once extraction lands (M1+); kept now so the
-// Event surface is stable.
-#[allow(dead_code)]
 #[derive(Debug)]
 pub enum Event {
-    /// An archive was opened successfully.
+    /// A top-level archive was opened successfully (root view).
     Opened {
         /// Display name of the archive (e.g. its file name).
         name: String,
         /// Flat listing of the archive's entries (the UI builds the tree).
+        entries: Vec<EntryMeta>,
+    },
+    /// The view changed (Enter / Back / JumpTo / nested archive).
+    Navigated {
+        /// Clickable breadcrumb segments.
+        breadcrumb: Vec<BreadcrumbSegment>,
+        /// Directory currently in focus within the top archive (None = root).
+        focus: Option<EntryPath>,
+        /// Flat listing of the archive at the top of the navigation stack.
         entries: Vec<EntryMeta>,
     },
     /// The archive is encrypted and needs a password to open.
@@ -104,74 +129,110 @@ pub enum Event {
     Done(ExtractReport),
     /// The in-flight operation was cancelled.
     Cancelled,
-    /// The requested capability is not available yet (e.g. no format matched,
-    /// or a milestone feature is not implemented).
+    /// The requested capability is not available yet (e.g. a milestone
+    /// feature is not implemented, or a file entry cannot be opened).
     Unsupported(String),
     /// A generic, user-presentable error.
     Error(String),
+    /// The configuration changed (settings UI should refresh and persist).
+    ConfigChanged(AppConfig),
 }
+
+/// One level of the controller's navigation stack.
+#[derive(Clone)]
+struct NavFrame {
+    /// The archive open at this level.
+    archive: Arc<dyn Archive>,
+    /// Display name (file name for the root frame, entry name for nested).
+    name: String,
+    /// Directory currently in focus within this archive (None = root).
+    focus: Option<EntryPath>,
+    /// Cached flat entry listing (avoids re-listing on every navigation).
+    entries: Arc<Vec<EntryMeta>>,
+}
+
+/// Shared slot holding the token of the in-flight operation, if any. The UI
+/// handle can cancel it directly without going through the worker queue.
+type CancelSlot = Arc<Mutex<Option<CancellationToken>>>;
 
 /// The synchronous, UI-independent controller state machine.
 pub struct ControllerCore {
     registry: Arc<Registry>,
     config: AppConfig,
-    /// The currently open archive, if any.
-    current: Option<Arc<dyn Archive>>,
-    /// Token used to cancel in-flight operations.
-    cancel: CancellationToken,
+    /// Navigation stack (single-stack by design; architecture.md §4.3).
+    stack: Vec<NavFrame>,
+    /// Token slot shared with the UI handle.
+    cancel: CancelSlot,
+    /// Last successfully opened source, to re-open on encoding changes.
+    last_open: Option<(PathBuf, Option<String>)>,
 }
 
 impl ControllerCore {
     /// Create a controller composing the given format registry and config.
+    ///
+    /// Tests construct cores directly with their own cancellation slot;
+    /// production wiring goes through [`spawn_controller`].
+    #[cfg(test)]
     pub fn new(registry: Arc<Registry>, config: AppConfig) -> Self {
+        Self::with_cancel_slot(registry, config, Arc::new(Mutex::new(None)))
+    }
+
+    /// Create a controller sharing the given cancellation slot with the UI.
+    fn with_cancel_slot(registry: Arc<Registry>, config: AppConfig, cancel: CancelSlot) -> Self {
         Self {
             registry,
             config,
-            current: None,
-            cancel: CancellationToken::new(),
+            stack: Vec::new(),
+            cancel,
+            last_open: None,
         }
     }
 
     /// The active configuration.
-    #[allow(dead_code)] // Used by the settings UI from M1+; exercised in tests today.
+    #[allow(dead_code)] // Used by tests and the settings UI via events.
     pub fn config(&self) -> &AppConfig {
         &self.config
     }
 
-    /// Process a single intent, returning the events it produced.
+    /// Process a single intent, emitting events through `emit`.
     ///
     /// This is the heart of the controller and is safe to call from tests
-    /// without any UI or threads.
-    pub fn handle(&mut self, intent: &Intent) -> Vec<Event> {
+    /// without any UI or threads. Long-running operations (extraction) stream
+    /// progress events through `emit` as they run.
+    pub fn handle(&mut self, intent: &Intent, emit: &mut dyn FnMut(Event)) {
         match intent {
-            Intent::Open { path, password } => self.open(path, password.as_deref()),
+            Intent::Open { path, password } => self.open(path, password.as_deref(), emit),
+            Intent::Enter { path } => self.enter(path, emit),
+            Intent::Back => self.back(emit),
+            Intent::JumpTo { depth } => self.jump_to(*depth, emit),
+            Intent::Extract {
+                selection,
+                dest_dir,
+            } => self.extract(selection, dest_dir, emit),
+            Intent::Cancel => {
+                if let Some(token) = self.cancel.lock().unwrap().as_ref() {
+                    token.cancel();
+                }
+                emit(Event::Cancelled);
+            }
             Intent::SetEncoding(encoding) => {
                 self.config.filename_encoding = *encoding;
-                // Re-decoding entry names is a per-format concern handled when
-                // the archive is (re)opened; nothing to emit for now.
-                Vec::new()
+                emit(Event::ConfigChanged(self.config.clone()));
+                self.refresh_view(emit);
             }
-            // Navigation and extraction land in later milestones (see
-            // architecture.md §5). Until then, report them as unsupported so
-            // the UI can present a friendly message instead of crashing.
-            Intent::Enter { .. } => vec![Event::Unsupported(
-                "archive navigation is not implemented yet".into(),
-            )],
-            Intent::Back => vec![Event::Unsupported(
-                "archive navigation is not implemented yet".into(),
-            )],
-            Intent::Extract { .. } => vec![Event::Unsupported(
-                "extraction is not implemented yet".into(),
-            )],
-            Intent::Cancel => {
-                self.cancel.cancel();
-                vec![Event::Cancelled]
+            Intent::SetOverwrite(policy) => {
+                self.config.overwrite_policy = *policy;
+                emit(Event::ConfigChanged(self.config.clone()));
+            }
+            Intent::SetPreserveMtime(value) => {
+                self.config.preserve_mtime = *value;
+                emit(Event::ConfigChanged(self.config.clone()));
             }
         }
     }
 
     /// Open a top-level archive and list its entries.
-    fn open(&mut self, path: &Path, password: Option<&str>) -> Vec<Event> {
+    fn open(&mut self, path: &Path, password: Option<&str>, emit: &mut dyn FnMut(Event)) {
         let opts = OpenOptions {
             password: password.map(Secret::new),
             encoding: self.config.filename_encoding,
@@ -183,16 +244,21 @@ impl ControllerCore {
         {
             Ok(archive) => archive,
             Err(CoreError::PasswordRequired) => {
-                return vec![Event::PasswordRequired {
+                emit(Event::PasswordRequired {
                     path: path.to_path_buf(),
-                }];
+                });
+                return;
             }
             Err(CoreError::WrongPassword) => {
-                return vec![Event::WrongPassword {
+                emit(Event::WrongPassword {
                     path: path.to_path_buf(),
-                }];
+                });
+                return;
             }
-            Err(e) => return vec![Event::Error(e.to_string())],
+            Err(e) => {
+                emit(Event::Error(e.to_string()));
+                return;
+            }
         };
 
         let archive: Arc<dyn Archive> = Arc::from(archive);
@@ -202,19 +268,357 @@ impl ControllerCore {
                     .file_name()
                     .map(|n| n.to_string_lossy().into_owned())
                     .unwrap_or_else(|| path.display().to_string());
-                self.current = Some(archive);
-                vec![Event::Opened { name, entries }]
+                self.stack = vec![NavFrame {
+                    archive,
+                    name: name.clone(),
+                    focus: None,
+                    entries: Arc::new(entries.clone()),
+                }];
+                self.last_open = Some((path.to_path_buf(), password.map(str::to_owned)));
+                emit(Event::Opened { name, entries });
             }
-            Err(e) => vec![Event::Error(e.to_string())],
+            Err(e) => emit(Event::Error(e.to_string())),
         }
+    }
+
+    /// Re-open the last source with the current encoding (encoding switch
+    /// refresh). Navigation resets to the archive root.
+    fn refresh_view(&mut self, emit: &mut dyn FnMut(Event)) {
+        let Some((path, password)) = self.last_open.clone() else {
+            return;
+        };
+        self.open(&path, password.as_deref(), emit);
+    }
+
+    /// Enter a child directory or a nested archive.
+    fn enter(&mut self, path: &EntryPath, emit: &mut dyn FnMut(Event)) {
+        let Some(top) = self.stack.last().cloned() else {
+            emit(Event::Error("no archive open".into()));
+            return;
+        };
+
+        let entry = top.entries.iter().find(|e| e.path == *path).cloned();
+        let kind = match &entry {
+            Some(e) => e.kind,
+            // A directory implied by path prefixes (e.g. "a/b.txt" implies "a").
+            None if top
+                .entries
+                .iter()
+                .any(|e| e.path.as_str().starts_with(&format!("{}/", path.as_str()))) =>
+            {
+                NodeKind::Dir
+            }
+            None => {
+                emit(Event::Error(format!("entry not found: {path}")));
+                return;
+            }
+        };
+
+        match kind {
+            NodeKind::Dir => {
+                if let Some(frame) = self.stack.last_mut() {
+                    frame.focus = Some(path.clone());
+                }
+                self.emit_navigated(emit);
+            }
+            NodeKind::Archive => {
+                let Some(entry) = entry else {
+                    emit(Event::Error("archive entry not found".into()));
+                    return;
+                };
+                let opts = OpenOptions {
+                    password: self
+                        .last_open
+                        .as_ref()
+                        .and_then(|(_, p)| p.as_deref())
+                        .map(Secret::new),
+                    encoding: self.config.filename_encoding,
+                };
+                match top.archive.open_nested(&entry, &opts) {
+                    Ok(nested) => {
+                        let nested: Arc<dyn Archive> = Arc::from(nested);
+                        match nested.entries() {
+                            Ok(entries) => {
+                                let name = path
+                                    .as_str()
+                                    .rsplit('/')
+                                    .next()
+                                    .unwrap_or("archive")
+                                    .to_string();
+                                self.stack.push(NavFrame {
+                                    archive: nested,
+                                    name,
+                                    focus: None,
+                                    entries: Arc::new(entries),
+                                });
+                                self.emit_navigated(emit);
+                            }
+                            Err(e) => emit(Event::Error(e.to_string())),
+                        }
+                    }
+                    Err(e) => emit(Event::Error(e.to_string())),
+                }
+            }
+            _ => emit(Event::Unsupported(format!(
+                "opening '{}' is not implemented yet",
+                path.as_str()
+            ))),
+        }
+    }
+
+    /// Go back up one level: parent directory, or the outer archive.
+    fn back(&mut self, emit: &mut dyn FnMut(Event)) {
+        if self.stack.is_empty() {
+            emit(Event::Error("no archive open".into()));
+            return;
+        }
+        let at_root = {
+            let top = self.stack.last().unwrap();
+            top.focus.is_none() && self.stack.len() == 1
+        };
+        if at_root {
+            return; // Already at the top; stay put.
+        }
+        let top_focus = self.stack.last().and_then(|f| f.focus.clone());
+        match top_focus {
+            Some(focus) => {
+                // Move to the parent directory within the same archive.
+                let parent = focus.as_str().rsplit_once('/').map(|(p, _)| p.to_string());
+                let frame = self.stack.last_mut().unwrap();
+                frame.focus = parent.map(|p| EntryPath::new(&p).expect("parent path is valid"));
+            }
+            None => {
+                // Pop the nested-archive frame.
+                self.stack.pop();
+            }
+        }
+        self.emit_navigated(emit);
+    }
+
+    /// Jump to a breadcrumb segment (truncating the stack).
+    fn jump_to(&mut self, depth: usize, emit: &mut dyn FnMut(Event)) {
+        let segments = self.breadcrumb();
+        let Some(segment) = segments.get(depth).cloned() else {
+            emit(Event::Error("invalid breadcrumb depth".into()));
+            return;
+        };
+        self.stack.truncate(segment.frame + 1);
+        if let Some(frame) = self.stack.last_mut() {
+            frame.focus = segment.focus;
+        }
+        self.emit_navigated(emit);
+    }
+
+    /// Flatten the navigation stack into breadcrumb segments.
+    fn breadcrumb(&self) -> Vec<BreadcrumbSegment> {
+        let mut out = Vec::new();
+        for (i, frame) in self.stack.iter().enumerate() {
+            out.push(BreadcrumbSegment {
+                label: frame.name.clone(),
+                frame: i,
+                focus: None,
+            });
+            if let Some(focus) = &frame.focus {
+                let mut prefix = String::new();
+                for component in focus.as_str().split('/') {
+                    if !prefix.is_empty() {
+                        prefix.push('/');
+                    }
+                    prefix.push_str(component);
+                    out.push(BreadcrumbSegment {
+                        label: component.to_string(),
+                        frame: i,
+                        focus: Some(EntryPath::new(&prefix).expect("prefix is valid")),
+                    });
+                }
+            }
+        }
+        out
+    }
+
+    /// Emit the current view (top frame's focus + cached entries).
+    fn emit_navigated(&mut self, emit: &mut dyn FnMut(Event)) {
+        let Some(top) = self.stack.last() else {
+            return;
+        };
+        emit(Event::Navigated {
+            breadcrumb: self.breadcrumb(),
+            focus: top.focus.clone(),
+            entries: top.entries.as_ref().clone(),
+        });
+    }
+
+    /// Run an extraction: iterate the selected entries (empty = all),
+    /// stream progress, honour the overwrite policy and safety limits, and
+    /// check the cancellation token between entries.
+    fn extract(&mut self, selection: &[EntryPath], dest_dir: &Path, emit: &mut dyn FnMut(Event)) {
+        let Some(top) = self.stack.last().cloned() else {
+            emit(Event::Error("no archive open".into()));
+            return;
+        };
+        let archive = top.archive.clone();
+        let all = top.entries.as_ref().clone();
+
+        let selected: Vec<EntryMeta> = if selection.is_empty() {
+            all.clone()
+        } else {
+            all.into_iter()
+                .filter(|e| selection.iter().any(|s| is_under(e, s)))
+                .collect()
+        };
+
+        let total_bytes: u64 = selected.iter().filter_map(|e| e.uncompressed_size).sum();
+        let limits = self.config.safety_limits;
+
+        // Use a fresh token, or honour one already installed (e.g. the UI
+        // cancelled just before the run started).
+        let token = self.cancel.lock().unwrap().clone().unwrap_or_default();
+        *self.cancel.lock().unwrap() = Some(token.clone());
+
+        let mut report = ExtractReport::default();
+        let mut done_bytes = 0u64;
+
+        for entry in &selected {
+            if token.is_cancelled() {
+                *self.cancel.lock().unwrap() = None;
+                emit(Event::Cancelled);
+                return;
+            }
+            // Safety limits (zip-bomb protection, architecture.md §4.8).
+            if done_bytes + entry.uncompressed_size.unwrap_or(0) > limits.max_total_bytes
+                || report.extracted + report.skipped >= limits.max_entries
+            {
+                *self.cancel.lock().unwrap() = None;
+                emit(Event::Error(format!(
+                    "safety limit exceeded: max_total_bytes={}, max_entries={}",
+                    limits.max_total_bytes, limits.max_entries
+                )));
+                return;
+            }
+
+            emit(Event::Progress(ProgressUpdate {
+                current: Some(entry.path.clone()),
+                bytes_done: done_bytes,
+                bytes_total: Some(total_bytes),
+                entries_done: report.extracted,
+            }));
+
+            match self.extract_one(archive.as_ref(), entry, dest_dir) {
+                Ok(Some(n)) => {
+                    done_bytes += n;
+                    report.extracted += 1;
+                }
+                Ok(None) => {
+                    report.skipped += 1;
+                }
+                Err(CoreError::Cancelled) => {
+                    *self.cancel.lock().unwrap() = None;
+                    emit(Event::Cancelled);
+                    return;
+                }
+                Err(e) => report.failed.push((entry.path.clone(), e)),
+            }
+        }
+
+        *self.cancel.lock().unwrap() = None;
+        emit(Event::Done(report));
+    }
+
+    /// Extract a single entry to `dest_dir`, applying the overwrite policy.
+    ///
+    /// Returns `Ok(Some(bytes))` when written, `Ok(None)` when skipped
+    /// (existing file per policy, or a symlink which is never followed). The
+    /// caller is responsible for counting extracted / skipped entries.
+    fn extract_one(
+        &self,
+        archive: &dyn Archive,
+        entry: &EntryMeta,
+        dest_dir: &Path,
+    ) -> Result<Option<u64>, CoreError> {
+        // Symlinks are never extracted (they could point outside the archive;
+        // see architecture.md §4.8).
+        if entry.kind == NodeKind::Symlink {
+            return Ok(None);
+        }
+
+        let dest = dest_dir.join(entry.path.as_str());
+        // Belt and braces: `EntryPath` is already validated (no `..`, no
+        // absolute paths), but double-check the destination stays inside.
+        if !dest.starts_with(dest_dir) {
+            return Err(CoreError::InvalidPath(format!(
+                "entry escapes destination: {}",
+                entry.path.as_str()
+            )));
+        }
+
+        if dest.exists() {
+            let overwrite = match self.config.overwrite_policy {
+                OverwritePolicy::Always => true,
+                OverwritePolicy::Never => false,
+                // M1: `Ask` is treated as "skip existing" until interactive
+                // conflict prompts land with core's ExtractEngine.
+                OverwritePolicy::Ask => false,
+                OverwritePolicy::Newer => {
+                    let dest_mtime = std::fs::metadata(&dest).and_then(|m| m.modified()).ok();
+                    match (entry.mtime, dest_mtime) {
+                        (Some(src), Some(dst)) => src > dst,
+                        _ => false,
+                    }
+                }
+            };
+            if !overwrite {
+                return Ok(None);
+            }
+        }
+
+        if let Some(parent) = dest.parent() {
+            std::fs::create_dir_all(parent)?;
+        }
+
+        // Directory entries: create the folder; nothing to write.
+        if entry.kind == NodeKind::Dir {
+            std::fs::create_dir_all(&dest)?;
+            return Ok(Some(0));
+        }
+
+        let mut sink = std::fs::File::create(&dest)?;
+        let written = archive.extract_to(entry, &mut sink)?;
+        if self.config.preserve_mtime
+            && let Some(mtime) = entry.mtime
+        {
+            let times = std::fs::FileTimes::new().set_modified(mtime);
+            let _ = sink.set_times(times);
+        }
+        Ok(Some(written))
     }
 }
 
-/// A handle used by the UI to submit intents to the background controller.
+/// Whether `entry` is `selection` itself or a descendant of a selected dir.
+fn is_under(entry: &EntryMeta, selection: &EntryPath) -> bool {
+    entry.path.as_str() == selection.as_str()
+        || entry
+            .path
+            .as_str()
+            .starts_with(&format!("{}/", selection.as_str()))
+}
+
+/// A handle used by the UI to submit intents and cancel in-flight work.
 #[derive(Clone)]
 pub struct ControllerHandle {
     /// Send an intent to the worker thread. Never blocks.
     pub commands: tokio::sync::mpsc::UnboundedSender<Intent>,
+    /// Shared cancellation slot; cancelling never waits for the worker.
+    cancel: CancelSlot,
+}
+
+impl ControllerHandle {
+    /// Request cancellation of the in-flight operation without round-tripping
+    /// through the worker thread.
+    pub fn cancel(&self) {
+        if let Some(token) = self.cancel.lock().unwrap().as_ref() {
+            token.cancel();
+        }
+    }
 }
 
 /// Spawn a [`ControllerCore`] on a dedicated worker thread.
@@ -232,31 +636,49 @@ pub fn spawn_controller(
 ) {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Intent>();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    let cancel: CancelSlot = Arc::new(Mutex::new(None));
+    let cancel_for_core = cancel.clone();
 
     std::thread::spawn(move || {
-        let mut core = ControllerCore::new(registry, config);
+        let mut core = ControllerCore::with_cancel_slot(registry, config, cancel_for_core);
         // `blocking_recv` is fine here: this is a dedicated OS thread whose
         // whole job is to wait for and process intents.
         while let Some(intent) = cmd_rx.blocking_recv() {
-            for event in core.handle(&intent) {
-                if event_tx.send(event).is_err() {
-                    // The UI dropped the receiver; stop the worker.
-                    return;
-                }
+            let mut alive = true;
+            core.handle(&intent, &mut |event| {
+                // If the UI dropped the receiver, stop the worker.
+                alive &= event_tx.send(event).is_ok();
+            });
+            if !alive {
+                break;
             }
         }
     });
 
-    (ControllerHandle { commands: cmd_tx }, event_rx)
+    (
+        ControllerHandle {
+            commands: cmd_tx,
+            cancel,
+        },
+        event_rx,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use hajizip_core::{
-        ArchiveFormat, Capabilities, Error, NodeKind, NodeRef, OpenOptions, Result,
+        ArchiveFormat, Capabilities, Error, NodeRef, Result, Utf8Flag, decode_filename,
     };
     use std::io::{Read, Write};
+    use std::sync::Mutex as StdMutex;
+
+    /// Run an intent, collecting emitted events.
+    fn run(core: &mut ControllerCore, intent: &Intent) -> Vec<Event> {
+        let mut events = Vec::new();
+        core.handle(intent, &mut |e| events.push(e));
+        events
+    }
 
     /// Build a minimal file entry for tests.
     fn meta(path: &str) -> EntryMeta {
@@ -283,9 +705,13 @@ mod tests {
         }
     }
 
-    /// A fake archive that simply returns a fixed entry list.
+    /// A fake archive that simply returns a fixed entry list and echoes bytes
+    /// on extraction.
+    #[derive(Clone)]
     struct FakeArchive {
         entries: Vec<EntryMeta>,
+        /// Called before each `extract_to`; lets tests inject cancellation.
+        before_extract: Option<Arc<dyn Fn() + Send + Sync>>,
     }
 
     impl Archive for FakeArchive {
@@ -301,8 +727,14 @@ mod tests {
         fn reader<'s>(&'s self, _entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
             Err(Error::UnsupportedFeature("fake".into()))
         }
-        fn extract_to(&self, _entry: &EntryMeta, _sink: &mut dyn Write) -> Result<u64> {
-            Err(Error::UnsupportedFeature("fake".into()))
+        fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
+            if let Some(hook) = &self.before_extract {
+                hook();
+            }
+            let n = entry.uncompressed_size.unwrap_or(0);
+            let bytes = vec![b'x'; n as usize];
+            sink.write_all(&bytes)?;
+            Ok(n)
         }
         fn open_nested(&self, _entry: &EntryMeta, _opts: &OpenOptions) -> Result<Box<dyn Archive>> {
             Err(Error::UnsupportedFeature("fake".into()))
@@ -333,6 +765,46 @@ mod tests {
         fn open(&self, _src: Source, _opts: &OpenOptions) -> Result<Box<dyn Archive>> {
             Ok(Box::new(FakeArchive {
                 entries: self.entries.clone(),
+                before_extract: None,
+            }))
+        }
+    }
+
+    /// A format that decodes `raw_name` with the requested encoding, so
+    /// encoding-switch refresh is observable.
+    struct EncodingFormat {
+        raw: Vec<Vec<u8>>,
+        last_encoding: Arc<StdMutex<Option<FilenameEncoding>>>,
+    }
+
+    impl ArchiveFormat for EncodingFormat {
+        fn id(&self) -> &str {
+            "enc"
+        }
+        fn display_name(&self) -> &str {
+            "Enc"
+        }
+        fn extensions(&self) -> &[&str] {
+            &["enc"]
+        }
+        fn matches(&self, _head: &[u8], _ext: Option<&str>) -> bool {
+            true
+        }
+        fn open(&self, _src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
+            *self.last_encoding.lock().unwrap() = Some(opts.encoding);
+            let entries = self
+                .raw
+                .iter()
+                .map(|raw| {
+                    let name = decode_filename(raw, opts.encoding, Utf8Flag(false))?;
+                    let mut e = meta(&name);
+                    e.raw_name = raw.clone();
+                    Ok(e)
+                })
+                .collect::<Result<Vec<_>>>()?;
+            Ok(Box::new(FakeArchive {
+                entries,
+                before_extract: None,
             }))
         }
     }
@@ -365,18 +837,25 @@ mod tests {
         path
     }
 
+    fn core_with(registry: Registry) -> ControllerCore {
+        ControllerCore::new(Arc::new(registry), AppConfig::default())
+    }
+
     #[test]
     fn open_with_registered_format_emits_opened() {
         let registry = Registry::new().register_archive(OkFormat {
             entries: vec![meta("a.txt"), meta("dir/b.txt")],
         });
-        let mut core = ControllerCore::new(Arc::new(registry), AppConfig::default());
+        let mut core = core_with(registry);
 
         let path = temp_archive("ok.fake");
-        let events = core.handle(&Intent::Open {
-            path: path.clone(),
-            password: None,
-        });
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: path.clone(),
+                password: None,
+            },
+        );
 
         match &events[..] {
             [Event::Opened { name, entries }] => {
@@ -389,11 +868,14 @@ mod tests {
 
     #[test]
     fn open_with_empty_registry_emits_error() {
-        let mut core = ControllerCore::new(Arc::new(Registry::new()), AppConfig::default());
-        let events = core.handle(&Intent::Open {
-            path: PathBuf::from("/nonexistent/definitely-missing.zip"),
-            password: None,
-        });
+        let mut core = core_with(Registry::new());
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: PathBuf::from("/nonexistent/definitely-missing.zip"),
+                password: None,
+            },
+        );
         assert!(
             matches!(&events[..], [Event::Error(_)]),
             "expected Error, got {events:?}"
@@ -403,13 +885,16 @@ mod tests {
     #[test]
     fn open_encrypted_without_password_emits_password_required() {
         let registry = Registry::new().register_archive(PasswordFormat);
-        let mut core = ControllerCore::new(Arc::new(registry), AppConfig::default());
+        let mut core = core_with(registry);
 
         let path = temp_archive("locked.fake");
-        let events = core.handle(&Intent::Open {
-            path: path.clone(),
-            password: None,
-        });
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: path.clone(),
+                password: None,
+            },
+        );
 
         assert!(
             matches!(&events[..], [Event::PasswordRequired { .. }]),
@@ -418,25 +903,342 @@ mod tests {
     }
 
     #[test]
-    fn unimplemented_intents_are_reported_not_panicking() {
-        let mut core = ControllerCore::new(Arc::new(Registry::new()), AppConfig::default());
-        let events = core.handle(&Intent::Extract {
-            selection: vec![],
-            dest_dir: PathBuf::from("/tmp"),
+    fn enter_dir_emits_navigated_with_breadcrumb() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt"), meta("dir/b.txt")],
         });
+        let mut core = core_with(registry);
+        let path = temp_archive("nav.fake");
+        run(
+            &mut core,
+            &Intent::Open {
+                path: path.clone(),
+                password: None,
+            },
+        );
+
+        let events = run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("dir").unwrap(),
+            },
+        );
+        match &events[..] {
+            [
+                Event::Navigated {
+                    breadcrumb,
+                    focus,
+                    entries,
+                },
+            ] => {
+                assert_eq!(focus.as_ref().unwrap().as_str(), "dir");
+                assert_eq!(breadcrumb.len(), 2); // archive name + "dir"
+                assert_eq!(
+                    breadcrumb[0].label,
+                    path.file_name().unwrap().to_string_lossy()
+                );
+                assert_eq!(breadcrumb[1].label, "dir");
+                assert_eq!(entries.len(), 2);
+            }
+            other => panic!("expected Navigated, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn back_returns_to_root_then_is_noop() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt"), meta("dir/sub/b.txt")],
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("back.fake"),
+                password: None,
+            },
+        );
+
+        // dir → dir/sub
+        run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("dir").unwrap(),
+            },
+        );
+        run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("dir/sub").unwrap(),
+            },
+        );
+        // back → dir
+        let events = run(&mut core, &Intent::Back);
+        match &events[..] {
+            [Event::Navigated { focus, .. }] => {
+                assert_eq!(focus.as_ref().unwrap().as_str(), "dir");
+            }
+            other => panic!("expected Navigated, got {other:?}"),
+        }
+        // back → root
+        run(&mut core, &Intent::Back);
+        // back at root → no event
+        let events = run(&mut core, &Intent::Back);
+        assert!(events.is_empty(), "expected no events, got {events:?}");
+    }
+
+    #[test]
+    fn enter_nested_archive_pushes_frame() {
+        // The fake cannot open_nested; instead verify the error path surfaces
+        // cleanly, and that a dir-implied path entry still works.
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt")],
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("nested.fake"),
+                password: None,
+            },
+        );
+        // Enter a file: unsupported, not a crash.
+        let events = run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("a.txt").unwrap(),
+            },
+        );
         assert!(matches!(&events[..], [Event::Unsupported(_)]));
     }
 
     #[test]
+    fn extract_emits_progress_then_done() {
+        let entries = vec![meta("a.txt"), meta("b.txt"), meta("c.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("extract.fake"),
+                password: None,
+            },
+        );
+
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-extract-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        let progress = events
+            .iter()
+            .filter(|e| matches!(e, Event::Progress(_)))
+            .count();
+        assert_eq!(progress, 3, "one progress per entry, got {events:?}");
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 3);
+                assert_eq!(report.skipped, 0);
+                assert!(report.failed.is_empty());
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert!(dest.join("a.txt").exists());
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_honours_overwrite_policy() {
+        let entries = vec![meta("a.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("overwrite.fake"),
+                password: None,
+            },
+        );
+        // Default policy is Ask → skip existing files.
+        let dest =
+            std::env::temp_dir().join(format!("hajizip-gui-overwrite-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("a.txt"), b"existing").unwrap();
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.skipped, 1);
+                assert_eq!(report.extracted, 0);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // Existing content preserved.
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+            "existing"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn cancel_before_extract_emits_cancelled() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt"), meta("b.txt")],
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("cancel.fake"),
+                password: None,
+            },
+        );
+        // Install a pre-cancelled token in the shared slot: extraction must
+        // notice it before the first entry and emit Cancelled.
+        let token = CancellationToken::new();
+        token.cancel();
+        *core.cancel.lock().unwrap() = Some(token);
+
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        assert!(
+            matches!(events.last(), Some(Event::Cancelled)),
+            "expected Cancelled, got {events:?}"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn cancel_mid_extract_emits_cancelled() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt"), meta("b.txt"), meta("c.txt")],
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("midcancel.fake"),
+                password: None,
+            },
+        );
+        let slot = core.cancel.clone();
+        let dest =
+            std::env::temp_dir().join(format!("hajizip-gui-midcancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+
+        // Run extraction on a worker thread and cancel after the first entry.
+        let events = Arc::new(StdMutex::new(Vec::new()));
+        std::thread::scope(|scope| {
+            let core = &mut core;
+            let slot = &slot;
+            let dest = &dest;
+            let events = &events;
+            let mut first = true;
+            scope.spawn(move || {
+                core.handle(
+                    &Intent::Extract {
+                        selection: vec![],
+                        dest_dir: dest.to_path_buf(),
+                    },
+                    &mut |e| {
+                        if let Event::Progress(_) = &e
+                            && first
+                        {
+                            first = false;
+                            slot.lock().unwrap().as_ref().unwrap().cancel();
+                        }
+                        events.lock().unwrap().push(e);
+                    },
+                );
+            });
+        });
+        let mut guard = events.lock().unwrap();
+        let last = guard.pop();
+        assert!(
+            matches!(last, Some(Event::Cancelled)),
+            "expected Cancelled, got {last:?}"
+        );
+        drop(guard);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
     fn set_encoding_updates_config() {
-        let mut core = ControllerCore::new(Arc::new(Registry::new()), AppConfig::default());
+        let mut core = core_with(Registry::new());
         assert_eq!(core.config().filename_encoding, FilenameEncoding::Auto);
-        core.handle(&Intent::SetEncoding(FilenameEncoding::Forced(
-            hajizip_core::Codepage::Gbk,
-        )));
+        let events = run(
+            &mut core,
+            &Intent::SetEncoding(FilenameEncoding::Forced(hajizip_core::Codepage::Gbk)),
+        );
         assert_eq!(
             core.config().filename_encoding,
             FilenameEncoding::Forced(hajizip_core::Codepage::Gbk)
         );
+        assert!(
+            matches!(&events[..], [Event::ConfigChanged(_)]),
+            "expected ConfigChanged, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn set_encoding_refreshes_open_archive() {
+        let last_encoding = Arc::new(StdMutex::new(None));
+        let registry = Registry::new().register_archive(EncodingFormat {
+            raw: vec![b"hello.txt".to_vec()],
+            last_encoding: last_encoding.clone(),
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("enc.fake"),
+                password: None,
+            },
+        );
+        assert_eq!(*last_encoding.lock().unwrap(), Some(FilenameEncoding::Auto));
+
+        let events = run(
+            &mut core,
+            &Intent::SetEncoding(FilenameEncoding::Forced(hajizip_core::Codepage::Utf8)),
+        );
+        // ConfigChanged then a fresh Opened from the re-open.
+        assert_eq!(
+            *last_encoding.lock().unwrap(),
+            Some(FilenameEncoding::Forced(hajizip_core::Codepage::Utf8))
+        );
+        assert!(
+            matches!(&events[..], [Event::ConfigChanged(_), Event::Opened { .. }]),
+            "expected ConfigChanged + Opened, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn config_intents_emit_config_changed() {
+        let mut core = core_with(Registry::new());
+        let events = run(&mut core, &Intent::SetOverwrite(OverwritePolicy::Always));
+        assert!(matches!(&events[..], [Event::ConfigChanged(_)]));
+        assert_eq!(core.config().overwrite_policy, OverwritePolicy::Always);
+
+        let events = run(&mut core, &Intent::SetPreserveMtime(false));
+        assert!(matches!(&events[..], [Event::ConfigChanged(_)]));
+        assert!(!core.config().preserve_mtime);
     }
 }
