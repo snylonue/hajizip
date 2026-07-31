@@ -24,4 +24,12 @@ time = "0.3"
 # already a transitive dep of tar, approved with rationale in
 # local-doc/research-time-filetime.md).
 filetime = "0.2"
+# XZ / LZMA2 single-stream codec (see local-doc/research-xz.md). `optimization`
+# stays off here; sevenz-rust2 pulls it in via feature unification (maintainer
+# decision: keep on, verify later with miri/sanitizer/fuzz).
+lzma-rust2 = { version = "0.16", default-features = false, features = ["std", "xz"] }
+# 7z archive reader (see local-doc/research-7z.md). `zstd` is an approved
+# C-FFI exception (decode-only) per maintainer; bzip2/deflate/compress are
+# deliberately not enabled.
+sevenz-rust2 = { version = "0.21", default-features = false, features = ["ppmd", "aes256", "zstd"] }
 

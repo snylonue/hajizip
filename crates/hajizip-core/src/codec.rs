@@ -1,6 +1,7 @@
 //! Codec abstraction for single-stream compression formats.
 
 pub mod gzip;
+pub mod xz;
 
 use std::io::{Read, Write};
 
