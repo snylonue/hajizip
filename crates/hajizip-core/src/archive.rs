@@ -1,5 +1,7 @@
 //! Archive abstraction for container formats that hold a file tree.
 
+pub mod zip;
+
 use std::io::{Read, Write};
 
 use crate::encoding::FilenameEncoding;
