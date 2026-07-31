@@ -122,16 +122,13 @@ mod tests {
     }
 
     #[test]
-    fn gbk_zip_lists_lossy_decoded_names() {
+    fn gbk_zip_lists_decoded_names() {
         let archive = open("zip/gbk.zip").expect("gbk.zip opens");
         let entries = archive.entries().unwrap();
         assert_eq!(entries.len(), 1);
-        // GBK bytes C4 E3 BA C3 (你好) have no UTF-8 flag; Auto decodes lossily.
-        assert!(
-            entries[0].path.as_str().contains('\u{fffd}'),
-            "expected a lossy (U+FFFD) name, got {:?}",
-            entries[0].path.as_str()
-        );
+        // GBK bytes C4 E3 BA C3 (你好) have no UTF-8 flag; Auto falls back to
+        // GBK and decodes correctly (encoding milestone, core `478e62f`).
+        assert_eq!(entries[0].path.as_str(), "你好");
     }
 
     #[test]
