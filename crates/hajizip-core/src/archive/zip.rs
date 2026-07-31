@@ -78,6 +78,8 @@ impl ZipArchive {
         let mut entries = Vec::with_capacity(archive.len());
         let mut index_by_path = HashMap::new();
         let mut any_encrypted = false;
+        // Maps each central-directory index to its (filtered) entry index.
+        let mut cd_to_entry: Vec<Option<usize>> = Vec::with_capacity(archive.len());
 
         for i in 0..archive.len() {
             // `by_index_raw` avoids the password check so encrypted archives
@@ -89,6 +91,7 @@ impl ZipArchive {
             // be extracted safely; they are skipped from the listing (first
             // line of zip-slip defense, architecture.md §4.8).
             let Ok(path) = EntryPath::new(&decoded) else {
+                cd_to_entry.push(None);
                 continue;
             };
             let kind = if file.is_dir() {
@@ -116,8 +119,28 @@ impl ZipArchive {
                 encrypted,
                 comment: None,
             };
+            cd_to_entry.push(Some(entries.len()));
             index_by_path.insert(path, entries.len());
             entries.push(meta);
+        }
+
+        // Second pass: mark entries that are themselves archives by sniffing
+        // the first bytes of their decompressed content (walk/Navigator recurse
+        // into `NodeKind::Archive` entries).
+        for i in 0..archive.len() {
+            let Some(Some(entry_idx)) = cd_to_entry.get(i) else {
+                continue;
+            };
+            let entry_idx = *entry_idx;
+            if entries[entry_idx].kind != NodeKind::File || entries[entry_idx].encrypted {
+                continue;
+            }
+            let mut file = archive.by_index(i).map_err(map_zip_err)?;
+            let mut head = [0u8; 512];
+            let n = file.read(&mut head)?;
+            if crate::archive::looks_like_nested_archive(&head[..n]) {
+                entries[entry_idx].kind = NodeKind::Archive;
+            }
         }
 
         Ok(Self {

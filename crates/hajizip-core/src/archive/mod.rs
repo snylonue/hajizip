@@ -25,6 +25,16 @@ pub(crate) fn looks_like_tar(head: &[u8]) -> bool {
     head.get(257..262).is_some_and(|m| m == b"ustar")
 }
 
+/// Whether the head bytes look like a nested archive (zip, tar, or gzip).
+/// Used to mark entries as [`NodeKind::Archive`] so walk/Navigator can
+/// recurse into them.
+pub(crate) fn looks_like_nested_archive(head: &[u8]) -> bool {
+    head.starts_with(b"PK\x03\x04")
+        || head.starts_with(b"PK\x05\x06")
+        || looks_like_tar(head)
+        || head.starts_with(&[0x1f, 0x8b])
+}
+
 /// Options controlling how an archive is opened.
 #[derive(Debug, Clone, Default)]
 pub struct OpenOptions {

@@ -125,7 +125,23 @@ impl TarArchive {
             records.push(TarRecord { file_pos, size });
         }
 
-        let src = archive.into_inner();
+        let mut src = archive.into_inner();
+
+        // Second pass: mark entries that are themselves archives by sniffing
+        // the first bytes of their data (walk/Navigator recurse into
+        // `NodeKind::Archive` entries).
+        for i in 0..entries.len() {
+            if entries[i].kind != NodeKind::File {
+                continue;
+            }
+            src.seek(std::io::SeekFrom::Start(records[i].file_pos))?;
+            let mut head = [0u8; 512];
+            let n = src.read(&mut head)?;
+            if crate::archive::looks_like_nested_archive(&head[..n]) {
+                entries[i].kind = NodeKind::Archive;
+            }
+        }
+
         Ok(Self {
             inner: Arc::new(TarArchiveInner {
                 src: Mutex::new(src),
