@@ -1241,4 +1241,159 @@ mod tests {
         assert!(matches!(&events[..], [Event::ConfigChanged(_)]));
         assert!(!core.config().preserve_mtime);
     }
+
+    // ---- End-to-end with real formats (composed registry + fixtures) ----
+
+    /// Repo-root `testdata/` fixture (shared with the core integration tests).
+    fn fixture(rel: &str) -> PathBuf {
+        Path::new(env!("CARGO_MANIFEST_DIR"))
+            .join("../../testdata")
+            .join(rel)
+    }
+
+    fn real_core() -> ControllerCore {
+        ControllerCore::new(
+            Arc::new(crate::registry::compose_registry()),
+            AppConfig::default(),
+        )
+    }
+
+    fn temp_dir(tag: &str) -> PathBuf {
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-{tag}-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        dest
+    }
+
+    #[test]
+    fn real_zip_opens_navigates_and_extracts() {
+        let mut core = real_core();
+
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("zip/basic.zip"),
+                password: None,
+            },
+        );
+        let entries = match &events[..] {
+            [Event::Opened { entries, .. }] => entries.clone(),
+            other => panic!("expected Opened, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 3, "a.txt + dir/ + dir/b.txt");
+
+        // Enter the dir/ directory → Navigated with a breadcrumb.
+        let events = run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("dir").unwrap(),
+            },
+        );
+        match &events[..] {
+            [
+                Event::Navigated {
+                    breadcrumb, focus, ..
+                },
+            ] => {
+                assert_eq!(focus.as_ref().unwrap().as_str(), "dir");
+                assert_eq!(breadcrumb.len(), 2, "archive name + dir");
+            }
+            other => panic!("expected Navigated, got {other:?}"),
+        }
+
+        // Back to the root, then extract everything.
+        run(&mut core, &Intent::Back);
+        let dest = temp_dir("e2e-zip");
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 3, "2 files + 1 dir");
+                assert_eq!(report.skipped, 0);
+                assert!(report.failed.is_empty(), "failed: {:?}", report.failed);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert_eq!(std::fs::metadata(dest.join("a.txt")).unwrap().len(), 16);
+        assert_eq!(std::fs::metadata(dest.join("dir/b.txt")).unwrap().len(), 15);
+        assert!(dest.join("dir").is_dir());
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn real_tar_gz_opens_through_the_codec_chain() {
+        let mut core = real_core();
+        for rel in ["tar/basic.tar.gz", "tar/hello.tgz"] {
+            let events = run(
+                &mut core,
+                &Intent::Open {
+                    path: fixture(rel),
+                    password: None,
+                },
+            );
+            match &events[..] {
+                [Event::Opened { entries, .. }] => {
+                    assert_eq!(entries.len(), 3, "{rel} should list a.txt/dir/dir-b.txt")
+                }
+                other => panic!("expected Opened for {rel}, got {other:?}"),
+            }
+        }
+    }
+
+    #[test]
+    fn real_bare_gzip_is_rejected_gracefully() {
+        let mut core = real_core();
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("gzip/hello.txt.gz"),
+                password: None,
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::Error(_)]),
+            "expected a graceful Error, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn real_encrypted_zip_lists_but_extraction_fails_gracefully() {
+        let mut core = real_core();
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("zip/enc.zip"),
+                password: None,
+            },
+        );
+        let entries = match &events[..] {
+            [Event::Opened { entries, .. }] => entries.clone(),
+            other => panic!("expected Opened, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 1);
+        assert!(entries[0].encrypted);
+
+        // M1 cannot read encrypted entries; the run must finish with the
+        // failure recorded, not crash.
+        let dest = temp_dir("e2e-enc");
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.failed.len(), 1);
+                assert_eq!(report.extracted, 0);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        let _ = std::fs::remove_dir_all(&dest);
+    }
 }
