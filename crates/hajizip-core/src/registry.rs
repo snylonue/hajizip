@@ -1,72 +1,136 @@
-//! Format detection and registry.
+//! Format registry: composes concrete formats into an opener.
+
+use std::io::Read;
+use std::sync::Arc;
 
 use crate::archive::{Archive, OpenOptions};
-use crate::codec::Codec;
 use crate::error::{Error, Result};
-use crate::model::{CodecId, FormatKind};
+use crate::format::{ArchiveFormat, CodecFormat};
 use crate::source::Source;
 
-/// Detects formats and constructs the appropriate readers / codecs.
-pub trait FormatRegistry: Send + Sync {
-    /// Detect a format from leading bytes (preferred) and an optional file
-    /// extension (fallback).
-    fn detect(&self, head: &[u8], ext: Option<&str>) -> Option<FormatKind>;
+/// Number of leading bytes sniffed to detect a format. Large enough for tar's
+/// `ustar` magic at offset 257.
+const SNIFF_BYTES: usize = 512;
 
-    /// Open an archive from a source.
-    fn open_archive(&self, src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>>;
-
-    /// Construct a codec by id.
-    fn open_codec(&self, kind: CodecId) -> Result<Box<dyn Codec>>;
-}
-
-/// The default [`FormatRegistry`].
+/// Composes concrete formats and opens archives by auto-detection.
 ///
-/// This is the concrete entry point applications use to open archives. Its
-/// public signature is stable: as formats are implemented, only the internals
-/// change, so callers (the GUI, a future CLI) never need to change.
-#[derive(Debug, Default, Clone, Copy)]
-pub struct Registry;
+/// The registry holds **no built-in format list**; the application registers
+/// the concrete formats it supports (the composition root, typically the GUI)
+/// by referencing their implementations. Adding a format never changes this
+/// type.
+#[derive(Default)]
+pub struct Registry {
+    archive_formats: Vec<Arc<dyn ArchiveFormat>>,
+    codecs: Vec<Arc<dyn CodecFormat>>,
+}
 
 impl Registry {
-    /// Create the default registry.
+    /// Create an empty registry.
     pub fn new() -> Self {
-        Self
+        Self::default()
+    }
+
+    /// Register an archive format (builder-style).
+    pub fn register_archive(mut self, format: impl ArchiveFormat + 'static) -> Self {
+        self.archive_formats.push(Arc::new(format));
+        self
+    }
+
+    /// Register a codec format (builder-style).
+    pub fn register_codec(mut self, format: impl CodecFormat + 'static) -> Self {
+        self.codecs.push(Arc::new(format));
+        self
+    }
+
+    /// Registered archive formats (e.g. for the GUI to build menus and
+    /// file-dialog filters).
+    pub fn archive_formats(&self) -> &[Arc<dyn ArchiveFormat>] {
+        &self.archive_formats
+    }
+
+    /// Registered codec formats.
+    pub fn codecs(&self) -> &[Arc<dyn CodecFormat>] {
+        &self.codecs
+    }
+
+    /// Detect the archive format matching the given leading bytes / extension.
+    pub fn detect_archive(&self, head: &[u8], ext: Option<&str>) -> Option<Arc<dyn ArchiveFormat>> {
+        self.archive_formats
+            .iter()
+            .find(|f| f.matches(head, ext))
+            .cloned()
+    }
+
+    /// Detect the codec matching the given leading bytes / extension.
+    pub fn detect_codec(&self, head: &[u8], ext: Option<&str>) -> Option<Arc<dyn CodecFormat>> {
+        self.codecs.iter().find(|f| f.matches(head, ext)).cloned()
+    }
+
+    /// Open an archive from `src`, auto-detecting its format.
+    pub fn open_archive(&self, src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
+        let head = sniff(&src)?;
+        let ext = src.extension();
+        let format = self
+            .detect_archive(&head, ext.as_deref())
+            .ok_or_else(|| Error::UnsupportedFormat("no registered format matched".into()))?;
+        format.open(src, opts)
     }
 }
 
-impl FormatRegistry for Registry {
-    fn detect(&self, _head: &[u8], _ext: Option<&str>) -> Option<FormatKind> {
-        // M0: format detection is not implemented yet.
-        None
-    }
-
-    fn open_archive(&self, _src: Source, _opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        Err(Error::UnsupportedFeature("Registry::open_archive".into()))
-    }
-
-    fn open_codec(&self, kind: CodecId) -> Result<Box<dyn Codec>> {
-        Err(Error::UnsupportedFeature(format!(
-            "Registry::open_codec({kind:?})"
-        )))
-    }
-}
-
-/// Open an archive from `src` using the default [`Registry`].
-///
-/// This is the primary entry point for applications; it hides the registry
-/// entirely so callers depend only on this stable function.
-pub fn open(src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-    Registry::new().open_archive(src, opts)
+/// Read up to [`SNIFF_BYTES`] leading bytes from the source.
+fn sniff(src: &Source) -> Result<Vec<u8>> {
+    let mut buf = Vec::new();
+    src.open()?.take(SNIFF_BYTES as u64).read_to_end(&mut buf)?;
+    Ok(buf)
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
 
+    /// A throwaway format used only to exercise registration and detection.
+    struct FakeFormat;
+
+    impl ArchiveFormat for FakeFormat {
+        fn id(&self) -> &str {
+            "fake"
+        }
+        fn display_name(&self) -> &str {
+            "Fake"
+        }
+        fn extensions(&self) -> &[&str] {
+            &["fake"]
+        }
+        fn matches(&self, head: &[u8], _ext: Option<&str>) -> bool {
+            head.starts_with(b"FAKE")
+        }
+        fn open(&self, _src: Source, _opts: &OpenOptions) -> Result<Box<dyn Archive>> {
+            Err(Error::UnsupportedFeature("fake open".into()))
+        }
+    }
+
     #[test]
-    fn registry_is_constructible_and_stubbed() {
-        // The entry point exists and is callable; formats land later.
-        assert!(Registry::new().detect(&[], None).is_none());
-        assert!(open(Source::Memory(Vec::new()), &OpenOptions::default()).is_err());
+    fn empty_registry_detects_nothing() {
+        let reg = Registry::new();
+        assert!(reg.detect_archive(b"FAKEdata", None).is_none());
+        assert!(
+            reg.open_archive(Source::Memory(b"FAKE".to_vec()), &OpenOptions::default())
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn registered_format_is_detected() {
+        let reg = Registry::new().register_archive(FakeFormat);
+        assert_eq!(reg.archive_formats().len(), 1);
+        let fmt = reg.detect_archive(b"FAKEdata", None).expect("detected");
+        assert_eq!(fmt.id(), "fake");
+        assert_eq!(fmt.display_name(), "Fake");
+    }
+
+    #[test]
+    fn registry_is_send_sync() {
+        fn assert_send_sync<T: Send + Sync>() {}
+        assert_send_sync::<Registry>();
     }
 }

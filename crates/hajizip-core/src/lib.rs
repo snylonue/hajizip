@@ -14,6 +14,7 @@ pub mod codec;
 pub mod encoding;
 pub mod error;
 pub mod extract;
+pub mod format;
 pub mod model;
 pub mod navigate;
 pub mod registry;
@@ -27,9 +28,8 @@ pub use extract::{
     CancellationToken, ExtractEngine, ExtractOptions, ExtractReport, OverwritePolicy, ProgressSink,
     SafetyLimits,
 };
-pub use model::{
-    CodecId, EntryMeta, EntryPath, FormatKind, Level, Location, NodeKind, Secret, Timestamp,
-};
+pub use format::{ArchiveFormat, CodecFormat};
+pub use model::{EntryMeta, EntryPath, Level, Location, NodeKind, Secret, Timestamp};
 pub use navigate::{Frame, Navigator, Walk, WalkItem, WalkOptions, walk};
-pub use registry::{FormatRegistry, Registry, open};
+pub use registry::Registry;
 pub use source::{ReadSeek, Source};

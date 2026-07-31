@@ -3,16 +3,15 @@
 use std::io::{Read, Write};
 
 use crate::error::{Error, Result};
-use crate::model::{CodecId, Level};
+use crate::model::Level;
 
 /// A compression codec operating on a single byte stream (e.g. gzip, xz).
 ///
 /// Codecs are streaming: they wrap a reader/writer rather than buffering the
-/// whole payload in memory.
+/// whole payload in memory. A codec carries no format identity of its own;
+/// identity and detection live with the concrete implementation (see
+/// [`crate::format::CodecFormat`]).
 pub trait Codec: Send + Sync {
-    /// The identifier of this codec.
-    fn id(&self) -> CodecId;
-
     /// Wrap `input` in a reader that decompresses on the fly.
     fn decompress<'r>(&self, input: Box<dyn Read + Send + 'r>)
     -> Result<Box<dyn Read + Send + 'r>>;
@@ -25,9 +24,6 @@ pub trait Codec: Send + Sync {
         _output: Box<dyn Write + Send + 'w>,
         _level: Level,
     ) -> Result<Box<dyn Write + Send + 'w>> {
-        Err(Error::UnsupportedFeature(format!(
-            "compression via {:?}",
-            self.id()
-        )))
+        Err(Error::UnsupportedFeature("compression".into()))
     }
 }

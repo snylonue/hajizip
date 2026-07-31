@@ -35,4 +35,17 @@ impl Source {
             Source::Memory(bytes) => Ok(Box::new(Cursor::new(bytes.clone()))),
         }
     }
+
+    /// The lowercased file extension, if this is a path source that has one.
+    ///
+    /// Used as a fallback hint for format detection.
+    pub fn extension(&self) -> Option<String> {
+        match self {
+            Source::Path(p) => p
+                .extension()
+                .and_then(|e| e.to_str())
+                .map(|s| s.to_ascii_lowercase()),
+            Source::Memory(_) => None,
+        }
+    }
 }
