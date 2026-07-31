@@ -1,0 +1,63 @@
+# Build the Linux and Windows packages via Nix and publish a GitHub Release.
+#
+# Triggers:
+#   - push of a tag like `v0.1.0`  -> build + publish release with assets
+#   - manual `workflow_dispatch`    -> build + upload workflow artifacts only
+#
+# Artifacts:
+#   hajizip-windows-x86_64.zip  (hajizip-gui.exe + WebView2Loader.dll, ready
+#                                to run on Windows 10/11 with the WebView2
+#                                Runtime; built via pkgsCross.mingwW64)
+#   hajizip-linux-x86_64.tar.gz (Nix store output of the Linux package, for
+#                                Nix users; the packaged binary is wrapped
+#                                with the WebKitGTK/GTK runtime environment)
+
+name: build-and-release
+
+on:
+  push:
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: write
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v16
+      - name: Enable Nix cache
+        uses: DeterminateSystems/magic-nix-cache-action@v9
+
+      - name: Build Linux package
+        run: nix build '.#packages.x86_64-linux.gui' -o result-linux
+
+      - name: Build Windows package
+        run: nix build '.#packages.x86_64-linux.windows' -o result-windows
+
+      - name: Collect artifacts
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # Windows: exe + WebView2Loader.dll side by side (MinGW build).
+          (cd result-windows/bin && zip -qr "$GITHUB_WORKSPACE/dist/hajizip-windows-x86_64.zip" .)
+          # Linux: the Nix package output (store paths inside; for Nix users).
+          tar -czf dist/hajizip-linux-x86_64.tar.gz -C result-linux .
+
+      - name: Upload workflow artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: hajizip-dist
+          path: dist/
+
+      - name: Publish GitHub Release
+        if: startsWith(github.ref, 'refs/tags/')
+        uses: softprops/action-gh-release@v2
+        with:
+          files: dist/*
+          generate_release_notes: true

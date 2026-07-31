@@ -31,9 +31,21 @@
         perSystem =
           {
             pkgs,
+            lib,
+            self',
             ...
           }:
           {
+            # Declarative packages: Linux GUI (native) and Windows GUI
+            # (MinGW cross build). Defined only on Linux hosts (the cross
+            # package set and WebKit stack are Linux-only here); the Windows
+            # package is also what the CI release job builds.
+            packages = lib.optionalAttrs pkgs.stdenv.isLinux {
+              gui = pkgs.callPackage ./nix/gui.nix { };
+              windows = pkgs.pkgsCross.mingwW64.callPackage ./nix/windows.nix { };
+              default = self'.packages.gui;
+            };
+
             devShells.default = pkgs.mkShell {
               packages =
                 [
