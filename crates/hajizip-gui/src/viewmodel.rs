@@ -5,7 +5,7 @@
 //! §5.2). Everything here is a pure function so it can be unit-tested without
 //! any UI or threads.
 
-use std::collections::{BTreeMap, HashSet};
+use std::collections::HashSet;
 use std::time::SystemTime;
 
 use hajizip_core::{EntryMeta, EntryPath, NodeKind};
@@ -23,64 +23,11 @@ pub struct TreeRow {
 
 /// Direct children of `focus` within `entries` (None = archive root).
 ///
-/// Directories implied by path prefixes (e.g. `a/b.txt` implies dir `a`) are
-/// synthesized when the archive does not list them explicitly. Directories are
-/// listed before files, both alphabetically.
+/// Delegates to the core's `archive::child_entries` — the single source of
+/// truth for building trees from a flat listing (previously a copy-paste of
+/// the core helper; see `local-doc/review-duplication.md` §1).
 pub fn children_of(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<EntryMeta> {
-    let prefix = focus
-        .map(|f| format!("{}/", f.as_str()))
-        .unwrap_or_default();
-    let mut by_name: BTreeMap<String, EntryMeta> = BTreeMap::new();
-
-    // Pass 1: explicit entries directly under `focus`.
-    for e in entries {
-        let p = e.path.as_str();
-        if !p.starts_with(&prefix) {
-            continue;
-        }
-        let rest = &p[prefix.len()..];
-        if rest.is_empty() || rest.contains('/') {
-            continue;
-        }
-        by_name.insert(rest.to_string(), e.clone());
-    }
-
-    // Pass 2: directories implied by deeper paths, only if not explicit.
-    for e in entries {
-        let p = e.path.as_str();
-        if !p.starts_with(&prefix) {
-            continue;
-        }
-        let rest = &p[prefix.len()..];
-        let Some((first, _)) = rest.split_once('/') else {
-            continue;
-        };
-        by_name.entry(first.to_string()).or_insert_with(|| {
-            let full = format!("{prefix}{first}");
-            EntryMeta {
-                path: EntryPath::new(&full).expect("implied dir path is valid"),
-                raw_name: first.as_bytes().to_vec(),
-                kind: NodeKind::Dir,
-                uncompressed_size: None,
-                compressed_size: None,
-                mtime: None,
-                mode: None,
-                crc: None,
-                encrypted: false,
-                comment: None,
-            }
-        });
-    }
-
-    let mut out: Vec<EntryMeta> = by_name.into_values().collect();
-    out.sort_by(|a, b| {
-        let a_is_dir = a.kind == NodeKind::Dir;
-        let b_is_dir = b.kind == NodeKind::Dir;
-        b_is_dir
-            .cmp(&a_is_dir)
-            .then_with(|| a.path.as_str().cmp(b.path.as_str()))
-    });
-    out
+    hajizip_core::archive::child_entries(entries, focus)
 }
 
 /// Flatten the archive tree into indented rows, expanding only the dirs in

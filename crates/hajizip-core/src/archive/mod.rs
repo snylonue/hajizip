@@ -271,9 +271,11 @@ pub(crate) fn root_meta() -> EntryMeta {
 /// Direct children of `focus` (`None` = root) within the flat listing.
 ///
 /// Directories implied by path prefixes (e.g. `a/b.txt` implies dir `a`) are
-/// synthesized when the archive does not list them explicitly, mirroring the
-/// GUI's client-side tree builder. Dirs come first, then alphabetical.
-pub(crate) fn child_entries(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<EntryMeta> {
+/// synthesized when the archive does not list them explicitly. Dirs come
+/// first, then alphabetical. This is the single source of truth for building
+/// trees from a flat listing; the GUI delegates its `children_of` here (see
+/// `local-doc/review-duplication.md` §1).
+pub fn child_entries(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<EntryMeta> {
     let prefix = focus
         .map(|f| format!("{}/", f.as_str()))
         .unwrap_or_default();
