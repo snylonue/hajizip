@@ -382,10 +382,15 @@ impl ControllerCore {
         let top_focus = self.stack.last().and_then(|f| f.focus.clone());
         match top_focus {
             Some(focus) => {
-                // Move to the parent directory within the same archive.
-                let parent = focus.as_str().rsplit_once('/').map(|(p, _)| p.to_string());
+                // Move to the parent directory within the same archive. The
+                // parent of a validated `EntryPath` is always valid; handle the
+                // (impossible) failure gracefully instead of panicking.
+                let parent = focus
+                    .as_str()
+                    .rsplit_once('/')
+                    .map(|(p, _)| EntryPath::new(p).ok());
                 let frame = self.stack.last_mut().unwrap();
-                frame.focus = parent.map(|p| EntryPath::new(&p).expect("parent path is valid"));
+                frame.focus = parent.flatten();
             }
             None => {
                 // Pop the nested-archive frame.
