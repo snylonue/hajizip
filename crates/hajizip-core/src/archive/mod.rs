@@ -14,10 +14,11 @@ use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath, NodeKind, Secret};
 use crate::source::Source;
 
-/// Cap on bytes read into memory when opening a nested archive entry or a
-/// decompressed codec stream (zip-bomb guard). Entries beyond this are
-/// rejected; spill-to-temp-file is a future coordination point.
-pub(crate) const NESTED_OPEN_CAP: u64 = 512 * 1024 * 1024;
+/// Cap on bytes materialized in memory when opening a nested archive entry or
+/// a decompressed codec stream (zip-bomb guard). Entries beyond this are
+/// rejected; spill-to-temp-file is a future coordination point. Shared by
+/// `open_nested_bytes` here and `Registry::open_archive`.
+pub(crate) const IN_MEMORY_OPEN_CAP: u64 = 512 * 1024 * 1024;
 
 /// Whether the head bytes look like a (POSIX/GNU) tar archive: `ustar` magic
 /// at offset 257.
@@ -214,7 +215,7 @@ pub(crate) fn node_from_meta<I: ArchiveState + 'static>(inner: Arc<I>, meta: Ent
 /// [`crate::registry::Registry`]. Adding a format extends this list in one
 /// place (documented in `local-doc/research-zip.md` §5.2).
 pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-    if bytes.len() as u64 > NESTED_OPEN_CAP {
+    if bytes.len() as u64 > IN_MEMORY_OPEN_CAP {
         return Err(crate::error::Error::UnsupportedFeature(
             "nested archive exceeds in-memory open cap".into(),
         ));
@@ -225,9 +226,9 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
         let mut inner = Vec::new();
         reader
             .by_ref()
-            .take(NESTED_OPEN_CAP + 1)
+            .take(IN_MEMORY_OPEN_CAP + 1)
             .read_to_end(&mut inner)?;
-        if inner.len() as u64 > NESTED_OPEN_CAP {
+        if inner.len() as u64 > IN_MEMORY_OPEN_CAP {
             return Err(crate::error::Error::UnsupportedFeature(
                 "nested archive exceeds in-memory open cap".into(),
             ));

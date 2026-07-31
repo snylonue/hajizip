@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::sync::Arc;
 
-use crate::archive::{Archive, OpenOptions};
+use crate::archive::{Archive, IN_MEMORY_OPEN_CAP, OpenOptions};
 use crate::error::{Error, Result};
 use crate::format::{ArchiveFormat, CodecFormat};
 use crate::source::Source;
@@ -11,10 +11,6 @@ use crate::source::Source;
 /// Number of leading bytes sniffed to detect a format. Large enough for tar's
 /// `ustar` magic at offset 257.
 const SNIFF_BYTES: usize = 512;
-
-/// Cap on decompressed bytes materialized in memory when opening a compressed
-/// archive (e.g. `.tar.gz`) through a codec (zip-bomb guard).
-const DECOMPRESSED_OPEN_CAP: u64 = 512 * 1024 * 1024;
 
 /// Composes concrete formats and opens archives by auto-detection.
 ///
@@ -105,9 +101,9 @@ impl Registry {
             let mut buf = Vec::new();
             reader
                 .by_ref()
-                .take(DECOMPRESSED_OPEN_CAP + 1)
+                .take(IN_MEMORY_OPEN_CAP + 1)
                 .read_to_end(&mut buf)?;
-            if buf.len() as u64 > DECOMPRESSED_OPEN_CAP {
+            if buf.len() as u64 > IN_MEMORY_OPEN_CAP {
                 return Err(Error::UnsupportedFeature(
                     "decompressed archive exceeds in-memory open cap".into(),
                 ));
