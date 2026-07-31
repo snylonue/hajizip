@@ -1,12 +1,18 @@
 //! Extraction engine shared by the GUI and any future CLI.
 
-use std::path::PathBuf;
+use std::fs::FileTimes;
+use std::io::{Read, Write};
+use std::path::{Path, PathBuf};
 use std::sync::Arc;
 use std::sync::atomic::{AtomicBool, Ordering};
+use std::time::SystemTime;
 
 use crate::archive::Archive;
 use crate::error::{Error, Result};
-use crate::model::EntryPath;
+use crate::model::{EntryMeta, EntryPath, NodeKind};
+
+/// Chunk size for progress-reporting copies.
+const COPY_CHUNK: usize = 64 * 1024;
 
 /// How to handle existing files at the destination.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
@@ -109,15 +115,251 @@ pub struct ExtractEngine;
 
 impl ExtractEngine {
     /// Extract `selection` (empty means all entries) from `archive`.
+    ///
+    /// Safety properties (architecture.md §4.8):
+    /// - `EntryPath` normalization guarantees every destination stays inside
+    ///   `opts.dest_dir` (first line of zip-slip defense);
+    /// - symlink entries are **never materialized** (counted as skipped) so
+    ///   links cannot escape `dest_dir` (M1 safety default);
+    /// - `SafetyLimits` bounds total bytes and entry count; exceeding them
+    ///   aborts the run with [`Error::LimitExceeded`];
+    /// - cancellation is checked per entry and per chunk.
+    ///
+    /// Per-entry failures are collected in the report's `failed` list and do
+    /// not abort the run, except for [`Error::Cancelled`] and
+    /// [`Error::LimitExceeded`] which always abort.
     pub fn run(
-        _archive: &dyn Archive,
-        _selection: &[EntryPath],
-        _opts: &ExtractOptions,
-        _progress: &mut dyn ProgressSink,
-        _cancel: &CancellationToken,
+        archive: &dyn Archive,
+        selection: &[EntryPath],
+        opts: &ExtractOptions,
+        progress: &mut dyn ProgressSink,
+        cancel: &CancellationToken,
     ) -> Result<ExtractReport> {
-        Err(Error::UnsupportedFeature("ExtractEngine::run".into()))
+        // The frozen API does not carry the archive's name, so the top-folder
+        // feature cannot be implemented here (documented contract gap; the
+        // GUI does not use it either).
+        if opts.create_top_folder {
+            return Err(Error::UnsupportedFeature(
+                "create_top_folder: the archive name is not available in the \
+                 frozen ExtractEngine::run API"
+                    .into(),
+            ));
+        }
+
+        let mut report = ExtractReport::default();
+        let entries = resolve_selection(archive, selection)?;
+        if entries.len() as u64 > opts.limits.max_entries {
+            return Err(Error::LimitExceeded(opts.limits));
+        }
+        std::fs::create_dir_all(&opts.dest_dir)?;
+
+        // Directories whose mtime is restored bottom-up when preserve_mtime.
+        let mut dir_mtimes: Vec<(PathBuf, SystemTime)> = Vec::new();
+
+        for meta in &entries {
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+            let outcome = Self::extract_one(
+                archive,
+                meta,
+                opts,
+                progress,
+                cancel,
+                &mut report,
+                &mut dir_mtimes,
+            );
+            match outcome {
+                Ok(()) => {}
+                Err(e) if is_fatal(&e) => return Err(e),
+                Err(e) => report.failed.push((meta.path.clone(), e)),
+            }
+            if cancel.is_cancelled() {
+                return Err(Error::Cancelled);
+            }
+        }
+
+        if opts.preserve_mtime {
+            restore_dir_mtimes(&mut dir_mtimes);
+        }
+        Ok(report)
     }
+
+    /// Extract one entry, pairing `on_entry_start`/`on_entry_done` for every
+    /// non-fatal outcome.
+    fn extract_one(
+        archive: &dyn Archive,
+        meta: &EntryMeta,
+        opts: &ExtractOptions,
+        progress: &mut dyn ProgressSink,
+        cancel: &CancellationToken,
+        report: &mut ExtractReport,
+        dir_mtimes: &mut Vec<(PathBuf, SystemTime)>,
+    ) -> Result<()> {
+        progress.on_entry_start(&meta.path, meta.uncompressed_size);
+        let result = Self::extract_inner(archive, meta, opts, progress, cancel, report, dir_mtimes);
+        // Pair `on_entry_done` with `on_entry_start` for every non-fatal
+        // outcome (fatal errors abort the run entirely).
+        let fatal = matches!(
+            &result,
+            Err(Error::Cancelled) | Err(Error::LimitExceeded(_))
+        );
+        if !fatal {
+            progress.on_entry_done(&meta.path);
+        }
+        result
+    }
+
+    fn extract_inner(
+        archive: &dyn Archive,
+        meta: &EntryMeta,
+        opts: &ExtractOptions,
+        progress: &mut dyn ProgressSink,
+        cancel: &CancellationToken,
+        report: &mut ExtractReport,
+        dir_mtimes: &mut Vec<(PathBuf, SystemTime)>,
+    ) -> Result<()> {
+        // `EntryPath` guarantees no `..`/absolute components, so joining it to
+        // `dest_dir` cannot escape the destination (second line of defense is
+        // the canonical-path check kept for the future extraction of
+        // symbolic links).
+        let dest = opts.dest_dir.join(meta.path.as_str());
+        match meta.kind {
+            NodeKind::Dir => {
+                std::fs::create_dir_all(&dest)?;
+                if opts.preserve_mtime
+                    && let Some(t) = meta.mtime
+                {
+                    dir_mtimes.push((dest, t));
+                }
+                report.extracted += 1;
+            }
+            NodeKind::Symlink => {
+                // M1 safety default: never materialize symlinks (they could
+                // point outside dest_dir); counted as skipped.
+                report.skipped += 1;
+            }
+            NodeKind::File | NodeKind::Archive => {
+                if should_skip_existing(meta, &dest, opts) {
+                    report.skipped += 1;
+                    return Ok(());
+                }
+                if let Some(parent) = dest.parent() {
+                    std::fs::create_dir_all(parent)?;
+                }
+                let mut sink = std::fs::File::create(&dest)?;
+                copy_with_progress(
+                    archive,
+                    meta,
+                    &mut sink,
+                    progress,
+                    cancel,
+                    opts.limits,
+                    &mut report.total_bytes,
+                )?;
+                if opts.preserve_mtime
+                    && let Some(t) = meta.mtime
+                {
+                    set_modified(&dest, t)?;
+                }
+                report.extracted += 1;
+            }
+        }
+        Ok(())
+    }
+}
+
+/// Resolve `selection` to entry metadata (empty selection = all entries).
+fn resolve_selection(archive: &dyn Archive, selection: &[EntryPath]) -> Result<Vec<EntryMeta>> {
+    let entries = archive.entries()?;
+    if selection.is_empty() {
+        return Ok(entries);
+    }
+    selection
+        .iter()
+        .map(|p| {
+            entries
+                .iter()
+                .find(|e| &e.path == p)
+                .cloned()
+                .ok_or_else(|| Error::CorruptArchive(format!("no such entry in archive: {p}")))
+        })
+        .collect()
+}
+
+/// Whether an existing destination file should be skipped under `opts`.
+fn should_skip_existing(meta: &EntryMeta, dest: &Path, opts: &ExtractOptions) -> bool {
+    if !dest.exists() {
+        return false;
+    }
+    match opts.overwrite {
+        OverwritePolicy::Always => false,
+        // `Ask` has no interactive channel in the frozen `ProgressSink` API;
+        // skipping existing files is the safe default (matches the GUI's
+        // current behaviour, see local-doc/gui-m1.md coordination point 3).
+        OverwritePolicy::Ask | OverwritePolicy::Never => true,
+        OverwritePolicy::Newer => {
+            match (
+                meta.mtime,
+                std::fs::metadata(dest).and_then(|m| m.modified()),
+            ) {
+                (Some(src), Ok(dst)) => dst >= src,
+                // No source mtime or unreadable destination: overwrite.
+                _ => false,
+            }
+        }
+    }
+}
+
+/// Copy an entry to `sink` in chunks, reporting progress, checking
+/// cancellation and enforcing the byte limit.
+fn copy_with_progress(
+    archive: &dyn Archive,
+    meta: &EntryMeta,
+    sink: &mut dyn Write,
+    progress: &mut dyn ProgressSink,
+    cancel: &CancellationToken,
+    limits: SafetyLimits,
+    total: &mut u64,
+) -> Result<()> {
+    let mut reader = archive.reader(meta)?;
+    let mut buf = [0u8; COPY_CHUNK];
+    loop {
+        if cancel.is_cancelled() {
+            return Err(Error::Cancelled);
+        }
+        let n = reader.read(&mut buf)?;
+        if n == 0 {
+            return Ok(());
+        }
+        *total += n as u64;
+        if *total > limits.max_total_bytes {
+            return Err(Error::LimitExceeded(limits));
+        }
+        sink.write_all(&buf[..n])?;
+        progress.on_bytes(n as u64);
+    }
+}
+
+/// Set the modification time of an existing file.
+fn set_modified(path: &Path, t: SystemTime) -> Result<()> {
+    let file = std::fs::File::options().write(true).open(path)?;
+    file.set_times(FileTimes::new().set_modified(t))?;
+    Ok(())
+}
+
+/// Restore directory mtimes, children first so later file writes do not
+/// clobber parent timestamps. Best-effort: failures are ignored.
+fn restore_dir_mtimes(dirs: &mut [(PathBuf, SystemTime)]) {
+    dirs.sort_by_key(|(p, _)| std::cmp::Reverse(p.components().count()));
+    for (path, t) in dirs {
+        let _ = set_modified(path, *t);
+    }
+}
+
+/// Errors that abort the whole run rather than being recorded per-entry.
+fn is_fatal(e: &Error) -> bool {
+    matches!(e, Error::Cancelled | Error::LimitExceeded(_))
 }
 
 #[cfg(test)]
