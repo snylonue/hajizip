@@ -1,0 +1,26 @@
+[application]
+name = "hajizip-gui"
+
+[web.app]
+title = "hajizip"
+
+[web.watcher]
+reload_html = true
+
+[web.resource]
+style = []
+script = []
+
+[web.resource.dev]
+style = []
+script = []
+
+[bundle]
+identifier = "org.hajizip.hajizip-gui"
+publisher = "hajizip"
+
+[bundle.linux]
+
+[bundle.macos]
+
+[bundle.windows]

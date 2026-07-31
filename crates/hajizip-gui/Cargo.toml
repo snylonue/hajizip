@@ -1,0 +1,10 @@
+[package]
+name = "hajizip-gui"
+version.workspace = true
+edition.workspace = true
+
+[dependencies]
+hajizip-core = { path = "../hajizip-core" }
+dioxus = { version = "0.7", features = ["desktop"] }
+anyhow = "1"
+tokio = { version = "1", features = ["sync"] }
