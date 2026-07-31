@@ -10,4 +10,6 @@ flate2 = { version = "1.1", default-features = false, features = ["miniz_oxide"]
 # ZIP archive reader (see local-doc/research-zip.md). `deflate-flate2` keeps the
 # DEFLATE backend on flate2's default (miniz_oxide) rather than zlib-rs.
 zip = { version = "8.3", default-features = false, features = ["deflate-flate2"] }
+# tar archive reader (approved: research-tar.md, 方案 A).
+tar = "0.4"
 

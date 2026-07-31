@@ -12,6 +12,10 @@ use crate::source::Source;
 /// `ustar` magic at offset 257.
 const SNIFF_BYTES: usize = 512;
 
+/// Cap on decompressed bytes materialized in memory when opening a compressed
+/// archive (e.g. `.tar.gz`) through a codec (zip-bomb guard).
+const DECOMPRESSED_OPEN_CAP: u64 = 512 * 1024 * 1024;
+
 /// Composes concrete formats and opens archives by auto-detection.
 ///
 /// The registry holds **no built-in format list**; the application registers
@@ -54,11 +58,26 @@ impl Registry {
     }
 
     /// Detect the archive format matching the given leading bytes / extension.
+    ///
+    /// Magic bytes are preferred over the extension. The extension fallback
+    /// is only consulted when the head gives no competing signal: if a
+    /// registered codec matches the head (e.g. gzip magic), the bytes are
+    /// compressed, not a direct archive (a `.tgz` is gzip, not tar).
     pub fn detect_archive(&self, head: &[u8], ext: Option<&str>) -> Option<Arc<dyn ArchiveFormat>> {
-        self.archive_formats
-            .iter()
-            .find(|f| f.matches(head, ext))
-            .cloned()
+        if let Some(f) = self.archive_formats.iter().find(|f| f.matches(head, None)) {
+            return Some(f.clone());
+        }
+        let compressed = self.codecs.iter().any(|c| c.matches(head, None));
+        if !compressed
+            && let Some(ext) = ext
+            && let Some(f) = self
+                .archive_formats
+                .iter()
+                .find(|f| f.matches(head, Some(ext)))
+        {
+            return Some(f.clone());
+        }
+        None
     }
 
     /// Detect the codec matching the given leading bytes / extension.
@@ -67,13 +86,44 @@ impl Registry {
     }
 
     /// Open an archive from `src`, auto-detecting its format.
+    ///
+    /// Direct archive formats (zip, tar) are opened as-is. If no archive
+    /// format matches but a registered codec does (e.g. `.tar.gz`), the
+    /// stream is decompressed into a bounded in-memory buffer and the inner
+    /// format is detected on the decompressed content.
     pub fn open_archive(&self, src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
         let head = sniff(&src)?;
         let ext = src.extension();
-        let format = self
-            .detect_archive(&head, ext.as_deref())
-            .ok_or_else(|| Error::UnsupportedFormat("no registered format matched".into()))?;
-        format.open(src, opts)
+        if let Some(format) = self.detect_archive(&head, ext.as_deref()) {
+            return format.open(src, opts);
+        }
+
+        // Not a direct archive: try a registered codec and re-detect inside.
+        if let Some(codec_fmt) = self.detect_codec(&head, ext.as_deref()) {
+            let codec = codec_fmt.build();
+            let mut reader = codec.decompress(src.open()?)?;
+            let mut buf = Vec::new();
+            reader
+                .by_ref()
+                .take(DECOMPRESSED_OPEN_CAP + 1)
+                .read_to_end(&mut buf)?;
+            if buf.len() as u64 > DECOMPRESSED_OPEN_CAP {
+                return Err(Error::UnsupportedFeature(
+                    "decompressed archive exceeds in-memory open cap".into(),
+                ));
+            }
+            let inner_head = &buf[..buf.len().min(SNIFF_BYTES)];
+            if let Some(format) = self.detect_archive(inner_head, None) {
+                return format.open(Source::Memory(buf), opts);
+            }
+            return Err(Error::UnsupportedFormat(
+                "decompressed content is not a recognized archive".into(),
+            ));
+        }
+
+        Err(Error::UnsupportedFormat(
+            "no registered format matched".into(),
+        ))
     }
 }
 

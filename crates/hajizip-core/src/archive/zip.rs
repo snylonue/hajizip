@@ -5,21 +5,19 @@
 //! the already-approved miniz_oxide backend (pure safe Rust) instead of the
 //! crate's default zlib-rs backend.
 
-use std::collections::{BTreeMap, HashMap};
+use std::collections::HashMap;
 use std::io::{Cursor, Read, Write};
 use std::sync::{Arc, Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
-use crate::archive::{Archive, Capabilities, Node, NodeKind, NodeRef, OpenOptions};
-use crate::encoding::{FilenameEncoding, Utf8Flag, decode_filename};
+use crate::archive::{
+    Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, decode_name,
+    node_from_meta, open_nested_bytes, root_meta,
+};
 use crate::error::{Error, Result};
 use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath};
 use crate::source::{ReadSeek, Source};
-
-/// Cap on bytes read into memory when opening a nested archive entry
-/// (zip-bomb guard: nested entries beyond this are rejected).
-const NESTED_OPEN_CAP: u64 = 512 * 1024 * 1024;
 
 /// Zip local-file-header magic (`PK\x03\x04`).
 const ZIP_LOCAL_HEADER: &[u8] = b"PK\x03\x04";
@@ -187,13 +185,23 @@ impl ZipArchiveInner {
     }
 }
 
+impl ArchiveState for ZipArchiveInner {
+    fn entries(&self) -> &[EntryMeta] {
+        &self.entries
+    }
+
+    fn read_entry_bytes(&self, meta: &EntryMeta) -> Result<Vec<u8>> {
+        self.read_to_vec(meta)
+    }
+}
+
 impl Archive for ZipArchive {
     fn entries(&self) -> Result<Vec<EntryMeta>> {
         Ok(self.inner.entries.clone())
     }
 
     fn root(&self) -> Result<NodeRef> {
-        Ok(Box::new(ZipDirNode {
+        Ok(Box::new(DirNode {
             inner: self.inner.clone(),
             path: None,
             meta: root_meta(),
@@ -224,19 +232,7 @@ impl Archive for ZipArchive {
 
     fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
         let bytes = self.inner.read_to_vec(entry)?;
-        if bytes.len() as u64 > NESTED_OPEN_CAP {
-            return Err(Error::UnsupportedFeature(
-                "nested archive exceeds in-memory open cap".into(),
-            ));
-        }
-        // M1: only zip-in-zip is recognized (other formats need the
-        // registry-composition design, see `research-zip.md` §5.2).
-        if !(bytes.starts_with(ZIP_LOCAL_HEADER) || bytes.starts_with(ZIP_EMPTY_ARCHIVE)) {
-            return Err(Error::UnsupportedFormat(
-                "nested entry is not a recognized archive format".into(),
-            ));
-        }
-        ZipFormat.open(Source::Memory(bytes), opts)
+        open_nested_bytes(bytes, opts)
     }
 
     fn capabilities(&self) -> Capabilities {
@@ -248,183 +244,6 @@ impl Archive for ZipArchive {
             needs_password: false,
             can_write: false,
         }
-    }
-}
-
-/// A directory node in the zip tree (or the archive root when `path` is
-/// `None`).
-struct ZipDirNode {
-    inner: Arc<ZipArchiveInner>,
-    path: Option<EntryPath>,
-    meta: EntryMeta,
-}
-
-impl Node for ZipDirNode {
-    fn meta(&self) -> &EntryMeta {
-        &self.meta
-    }
-
-    fn kind(&self) -> NodeKind {
-        NodeKind::Dir
-    }
-
-    fn children(&self) -> Result<Vec<NodeRef>> {
-        Ok(child_entries(&self.inner.entries, self.path.as_ref())
-            .into_iter()
-            .map(|meta| node_from_meta(self.inner.clone(), meta))
-            .collect())
-    }
-
-    fn reader<'s>(&'s self) -> Result<Box<dyn Read + Send + 's>> {
-        Ok(Box::new(Cursor::new(Vec::new())))
-    }
-
-    fn open_archive(&self, _opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        Err(Error::CorruptArchive("directory is not an archive".into()))
-    }
-}
-
-/// A file (or symlink) node in the zip tree.
-struct ZipFileNode {
-    inner: Arc<ZipArchiveInner>,
-    meta: EntryMeta,
-}
-
-impl Node for ZipFileNode {
-    fn meta(&self) -> &EntryMeta {
-        &self.meta
-    }
-
-    fn kind(&self) -> NodeKind {
-        self.meta.kind
-    }
-
-    fn children(&self) -> Result<Vec<NodeRef>> {
-        Ok(Vec::new())
-    }
-
-    fn reader<'s>(&'s self) -> Result<Box<dyn Read + Send + 's>> {
-        Ok(Box::new(Cursor::new(self.inner.read_to_vec(&self.meta)?)))
-    }
-
-    fn open_archive(&self, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        let bytes = self.inner.read_to_vec(&self.meta)?;
-        if bytes.len() as u64 > NESTED_OPEN_CAP {
-            return Err(Error::UnsupportedFeature(
-                "nested archive exceeds in-memory open cap".into(),
-            ));
-        }
-        if !(bytes.starts_with(ZIP_LOCAL_HEADER) || bytes.starts_with(ZIP_EMPTY_ARCHIVE)) {
-            return Err(Error::UnsupportedFormat(
-                "nested entry is not a recognized archive format".into(),
-            ));
-        }
-        ZipFormat.open(Source::Memory(bytes), opts)
-    }
-}
-
-/// Build a node for an entry (or a synthesized child) from its metadata.
-fn node_from_meta(inner: Arc<ZipArchiveInner>, meta: EntryMeta) -> NodeRef {
-    if meta.kind == NodeKind::Dir {
-        Box::new(ZipDirNode {
-            inner,
-            path: Some(meta.path.clone()),
-            meta,
-        })
-    } else {
-        Box::new(ZipFileNode { inner, meta })
-    }
-}
-
-/// Synthetic root-node metadata. The archive root has no real entry; its path
-/// is a reserved placeholder that never appears in listings.
-fn root_meta() -> EntryMeta {
-    EntryMeta {
-        path: EntryPath::new("<archive root>").expect("reserved root path is valid"),
-        raw_name: b"<archive root>".to_vec(),
-        kind: NodeKind::Dir,
-        uncompressed_size: None,
-        compressed_size: None,
-        mtime: None,
-        mode: None,
-        crc: None,
-        encrypted: false,
-        comment: None,
-    }
-}
-
-/// Direct children of `focus` (`None` = root) within the flat listing.
-///
-/// Directories implied by path prefixes (e.g. `a/b.txt` implies dir `a`) are
-/// synthesized when the archive does not list them explicitly, mirroring the
-/// GUI's client-side tree builder. Dirs come first, then alphabetical.
-fn child_entries(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<EntryMeta> {
-    let prefix = focus
-        .map(|f| format!("{}/", f.as_str()))
-        .unwrap_or_default();
-    let mut by_name: BTreeMap<String, EntryMeta> = BTreeMap::new();
-
-    // Explicit entries directly under `focus`.
-    for e in entries {
-        let p = e.path.as_str();
-        if !p.starts_with(&prefix) {
-            continue;
-        }
-        let rest = &p[prefix.len()..];
-        if rest.is_empty() || rest.contains('/') {
-            continue;
-        }
-        by_name.insert(rest.to_string(), e.clone());
-    }
-
-    // Directories implied by deeper paths, only if not explicit.
-    for e in entries {
-        let p = e.path.as_str();
-        if !p.starts_with(&prefix) {
-            continue;
-        }
-        let rest = &p[prefix.len()..];
-        let Some((first, _)) = rest.split_once('/') else {
-            continue;
-        };
-        by_name.entry(first.to_string()).or_insert_with(|| {
-            let full = format!("{prefix}{first}");
-            EntryMeta {
-                path: EntryPath::new(&full).expect("implied dir path is valid"),
-                raw_name: first.as_bytes().to_vec(),
-                kind: NodeKind::Dir,
-                uncompressed_size: None,
-                compressed_size: None,
-                mtime: None,
-                mode: None,
-                crc: None,
-                encrypted: false,
-                comment: None,
-            }
-        });
-    }
-
-    let mut out: Vec<EntryMeta> = by_name.into_values().collect();
-    out.sort_by(|a, b| {
-        let a_is_dir = a.kind == NodeKind::Dir;
-        let b_is_dir = b.kind == NodeKind::Dir;
-        b_is_dir
-            .cmp(&a_is_dir)
-            .then_with(|| a.path.as_str().cmp(b.path.as_str()))
-    });
-    out
-}
-
-/// Decode a raw entry name for listing.
-///
-/// Legacy codepages (GBK, Shift-JIS, ...) are not implemented yet (M3):
-/// names that fail decoding fall back to lossy UTF-8 so the archive still
-/// lists. The raw bytes are preserved in [`EntryMeta::raw_name`] for later
-/// re-decoding once the encoding milestone lands.
-fn decode_name(raw: &[u8], enc: FilenameEncoding) -> String {
-    match decode_filename(raw, enc, Utf8Flag(false)) {
-        Ok(s) => s,
-        Err(_) => String::from_utf8_lossy(raw).into_owned(),
     }
 }
 
