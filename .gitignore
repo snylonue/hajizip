@@ -1,7 +1,3 @@
-/target
-
-/.direnv
-/.envrc
-
 /AGENTS.md
-/local-docdist/
+/local-doc
+/dist/
