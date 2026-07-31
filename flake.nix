@@ -56,6 +56,38 @@
                   pkgs.librsvg
                 ];
             };
+
+            # Packaging shell: cross-compile the Windows GUI from Linux.
+            # MSVC route (recommended, no WebView2Loader.dll to ship) via
+            # cargo-xwin; MinGW route kept as fallback. Rust toolchain itself
+            # stays system-provided (rustup targets must be installed
+            # separately, see local-doc/research-packaging-windows.md).
+            devShells.windows-pack = pkgs.mkShell {
+              packages =
+                [
+                  pkgs.cargo-xwin
+                  pkgs.wine64
+                  # MSVC route: clang-cl / llvm-lib / lld-link.
+                  pkgs.llvmPackages_21.clang-unwrapped
+                  pkgs.llvmPackages_21.libllvm
+                  pkgs.llvmPackages_21.lld
+                ]
+                ++ pkgs.lib.optionals pkgs.stdenv.isLinux [
+                  # MinGW route: cross linker + pthreads (for -l:libpthread.a).
+                  # Cross packages must live in buildInputs, not packages
+                  # (they are not available on the native hostPlatform).
+                  pkgs.pkgsCross.mingwW64.stdenv.cc
+                ];
+              buildInputs = pkgs.lib.optionals pkgs.stdenv.isLinux [
+                pkgs.pkgsCross.mingwW64.windows.pthreads
+              ];
+              shellHook = ''
+                echo "hajizip windows-pack shell"
+                echo "  MSVC:  cargo xwin build --release --target x86_64-pc-windows-msvc"
+                echo "  MinGW: cargo build --release --target x86_64-pc-windows-gnu (see scripts/package-windows.sh)"
+                echo "  Wine:  wine64 target/x86_64-pc-windows-msvc/release/hajizip-gui.exe"
+              '';
+            };
           };
       }
     );
