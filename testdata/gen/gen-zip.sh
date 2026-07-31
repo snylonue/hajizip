@@ -9,6 +9,12 @@ set -euo pipefail
 TMP=$(mktemp -d)
 trap 'rm -rf "$TMP"' EXIT
 
+# Zero source-file mtimes so `zip` records a fixed timestamp and output is
+# byte-stable across regenerations.
+touch_epoch() {
+    find "$1" -exec touch -d '@0' {} +
+}
+
 OUT="$(cd "$(dirname "$0")/../zip" && pwd)"
 cd "$OUT"
 rm -f ./*.zip
@@ -22,12 +28,14 @@ printf 'utf8 content\n' > "$TMP/build2/你好.txt"
 printf 'ascii\n' > "$TMP/build2/hello.txt"
 
 # --- basic.zip: deflate + explicit dir entry -------------------------------
+touch_epoch "$TMP/build"
 (cd "$TMP/build" && zip -X -r -q "$OUT/basic.zip" a.txt dir)
 
 # --- stored.zip: stored (no compression) ------------------------------------
 (cd "$TMP/build" && zip -X -0 -q "$OUT/stored.zip" a.txt)
 
 # --- utf8.zip: UTF-8 names with the EFS flag set ----------------------------
+touch_epoch "$TMP/build2"
 (cd "$TMP/build2" && zip -X -q "$OUT/utf8.zip" 你好.txt hello.txt)
 
 # --- gbk.zip: GBK-encoded name, EFS NOT set (byte-patch trick) --------------
@@ -36,6 +44,7 @@ printf 'ascii\n' > "$TMP/build2/hello.txt"
 # local header and the central directory entry. Equal lengths mean no other
 # field needs adjusting.
 printf 'gbk content\n' > "$TMP/build2/xxxx"
+touch_epoch "$TMP/build2"
 (cd "$TMP/build2" && zip -X -q "$OUT/gbk-raw.zip" xxxx)
 size=$(stat -c%s "$OUT/gbk-raw.zip")
 cd_off=$(od -An -tu4 --endian=little -j $((size - 6)) -N4 "$OUT/gbk-raw.zip" | tr -d ' ')
@@ -49,16 +58,31 @@ mkdir -p "$TMP/build3/outer"
 printf 'evil\n' > "$TMP/build3/evil.txt"
 printf 'ok\n' > "$TMP/build3/ok.txt"
 # Info-ZIP keeps the `..` component when the file is referenced through one.
+touch_epoch "$TMP/build3"
 (cd "$TMP/build3" && zip -X -q "$OUT/zipslip.zip" outer/../evil.txt ok.txt)
 
 # --- enc.zip: ZipCrypto-encrypted entry -------------------------------------
+# NOTE: ZipCrypto embeds a random salt, so enc.zip bytes are NOT reproducible
+# across regenerations; tests assert behaviour (encrypted flag / read refusal),
+# not bytes.
+touch_epoch "$TMP/build"
 (cd "$TMP/build" && zip -X -q -P hunter2 "$OUT/enc.zip" a.txt)
 
 # --- nested.zip: zip containing another zip ---------------------------------
 mkdir -p "$TMP/build4"
 cp "$OUT/basic.zip" "$TMP/build4/inner.zip"
 printf 'top\n' > "$TMP/build4/top.txt"
+touch_epoch "$TMP/build4"
 (cd "$TMP/build4" && zip -X -q "$OUT/nested.zip" inner.zip top.txt)
+
+# --- deep.zip: two levels of nested zips -------------------------------------
+mkdir -p "$TMP/deep"
+cp "$OUT/basic.zip" "$TMP/deep/level2.zip"
+touch_epoch "$TMP/deep"
+(cd "$TMP/deep" && zip -X -q "$OUT/level1.zip" level2.zip)
+cp "$OUT/level1.zip" "$TMP/deep/level1.zip"
+touch_epoch "$TMP/deep"
+(cd "$TMP/deep" && zip -X -q "$OUT/deep.zip" level1.zip)
 
 # --- corrupt.zip: truncated in the middle of the central directory ----------
 head -c 64 basic.zip > corrupt.zip
@@ -69,6 +93,7 @@ printf '\x50\x4b\x05\x06\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00\x00
 # --- many.zip: 10 000 small entries -----------------------------------------
 mkdir -p "$TMP/build5"
 for i in $(seq 1 10000); do printf x > "$TMP/build5/f$i"; done
+touch_epoch "$TMP/build5"
 (cd "$TMP/build5" && zip -X -q "$OUT/many.zip" f*)
 
 # --- manifest -----------------------------------------------------------------
@@ -102,6 +127,10 @@ note = "ZipCrypto-encrypted (password hunter2); reads unsupported in M1"
 [nested.zip]
 name = ["inner.zip", "top.txt"]
 note = "inner.zip is a copy of basic.zip"
+
+[deep.zip]
+name = ["level1.zip"]
+note = "level1.zip contains level2.zip (a copy of basic.zip): 2 nested levels"
 
 [corrupt.zip]
 note = "truncated central directory; open must fail"

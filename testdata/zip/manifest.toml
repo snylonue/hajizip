@@ -28,6 +28,10 @@ note = "ZipCrypto-encrypted (password hunter2); reads unsupported in M1"
 name = ["inner.zip", "top.txt"]
 note = "inner.zip is a copy of basic.zip"
 
+[deep.zip]
+name = ["level1.zip"]
+note = "level1.zip contains level2.zip (a copy of basic.zip): 2 nested levels"
+
 [corrupt.zip]
 note = "truncated central directory; open must fail"
 
