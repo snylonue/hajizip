@@ -9,6 +9,8 @@ mod app;
 mod config;
 mod controller;
 mod registry;
+mod ui;
+mod viewmodel;
 
 use dioxus::desktop::{Config, WindowBuilder};
 use dioxus::prelude::*;
