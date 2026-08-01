@@ -57,6 +57,12 @@ let
       # cargo-xwin's DONE check only reads the first line (architectures),
       # so it never notices the removed dirs.
       find "$out/xwin/sdk/include" -mindepth 1 -maxdepth 1 ! -name ucrt -exec rm -rf {} +
+      # Normalize the DONE file: xwin writes package names in parallel
+      # download-completion order, which is non-deterministic. Sort all
+      # lines after the first (the architecture line that cargo-xwin's
+      # DONE check reads) so the FOD hash is stable across runs.
+      { head -1 "$out/xwin/DONE"; tail -n +2 "$out/xwin/DONE" | LC_ALL=C sort; } > "$out/xwin/DONE.tmp"
+      mv "$out/xwin/DONE.tmp" "$out/xwin/DONE"
     '';
 
     outputHashMode = "recursive";
@@ -64,7 +70,7 @@ let
     # Pinned 2026-08: xwin manifest v17, x86_64 desktop, SDK 10.0.26100,
     # CRT 14.44.17.14, sdk/include trimmed to ucrt. Update by deleting the
     # hash, building once (network), and pasting the reported hash.
-    outputHash = "sha256-uZS5PJ1712mFC/oRZcp0KcQD3fusVUG47Ig+b1nvMtI=";
+    outputHash = "sha256-si8ncxyPa7ARWlEQHjWmzO2rL2km8vPnQOfheW9Dg2g=";
   };
 in
 stdenv.mkDerivation {
