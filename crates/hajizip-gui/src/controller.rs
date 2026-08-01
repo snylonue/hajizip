@@ -1135,6 +1135,127 @@ mod tests {
     }
 
     #[test]
+    fn extract_selection_extracts_only_selected_files() {
+        // A non-empty selection extracts exactly the chosen files, not the
+        // whole archive ("extract partial files").
+        let entries = vec![meta("a.txt"), meta("b.txt"), meta("c.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("partial.fake"),
+                password: None,
+            },
+        );
+
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-partial-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![
+                    EntryPath::new("a.txt").unwrap(),
+                    EntryPath::new("c.txt").unwrap(),
+                ],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 2, "only a.txt + c.txt");
+                assert_eq!(report.skipped, 0);
+                assert!(report.failed.is_empty());
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert!(dest.join("a.txt").exists(), "a.txt extracted");
+        assert!(dest.join("c.txt").exists(), "c.txt extracted");
+        assert!(!dest.join("b.txt").exists(), "b.txt must NOT be extracted");
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn extract_selection_expands_directory_subtree() {
+        // Selecting a directory extracts its whole subtree (GUI semantics:
+        // `is_under`), while siblings outside the selection stay behind.
+        let entries = vec![meta("a.txt"), meta("dir/b.txt"), meta("dir/sub/c.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("subtree.fake"),
+                password: None,
+            },
+        );
+
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-subtree-{}", std::process::id()));
+        let _ = std::fs::remove_dir_all(&dest);
+        std::fs::create_dir_all(&dest).unwrap();
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![EntryPath::new("dir").unwrap()],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 2, "dir/b.txt + dir/sub/c.txt");
+                assert!(report.failed.is_empty());
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert!(dest.join("dir/b.txt").exists());
+        assert!(dest.join("dir/sub/c.txt").exists());
+        assert!(
+            !dest.join("a.txt").exists(),
+            "a.txt is outside the selection"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn real_zip_extract_selection_only_writes_chosen_files() {
+        // Partial extraction against a real archive: selecting only a.txt must
+        // not materialize dir/b.txt.
+        let mut core = real_core();
+        run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("zip/basic.zip"),
+                password: None,
+            },
+        );
+
+        let dest = temp_dir("e2e-zip-partial");
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![EntryPath::new("a.txt").unwrap()],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 1, "only a.txt");
+                assert!(report.failed.is_empty());
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert!(dest.join("a.txt").exists());
+        assert!(
+            !dest.join("dir/b.txt").exists(),
+            "dir/b.txt is not in the selection"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
     fn set_encoding_updates_config() {
         let mut core = core_with(Registry::new());
         assert_eq!(core.config().filename_encoding, FilenameEncoding::Auto);

@@ -246,6 +246,17 @@ pub fn App() -> Element {
     let status_text = status.read().clone();
     let status_has_text = !status_text.is_empty();
 
+    // The Extract button doubles as "extract partial files": with no selection
+    // it extracts the whole archive; with a selection it extracts only the
+    // chosen entries (directories select their whole subtree). The label
+    // reflects the live selection so the behavior is never ambiguous.
+    let selection_count = selection.read().len();
+    let extract_label = if selection_count == 0 {
+        "📤 Extract all".to_string()
+    } else {
+        format!("📤 Extract ({selection_count} selected)")
+    };
+
     rsx! {
         // Global stylesheet (injected once into the WebView document head).
         style { {CSS} }
@@ -277,7 +288,8 @@ pub fn App() -> Element {
                         class: "btn btn-sm",
                         onclick: extract_all,
                         disabled: !has_archive_value,
-                        "📤 Extract"
+                        title: "Extract the selected entries, or the whole archive if nothing is selected",
+                        "{extract_label}"
                     }
                     button {
                         class: "btn btn-ghost btn-sm",
