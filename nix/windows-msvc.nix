@@ -28,6 +28,12 @@ let
   # SDK into cargo-xwin's cache layout. Network happens here (FODs are exempt
   # from the sandbox); the result is pinned by outputHash, so the actual
   # hajizip build is fully offline and reproducible.
+  #
+  # Reproducibility: XWIN_SDK_VERSION / XWIN_CRT_VERSION pin the exact SDK/CRT
+  # versions (otherwise xwin picks "latest" from the mutable VS 17 channel
+  # manifest). The pinned outputHash is the final content lock: any upstream
+  # drift fails the build instead of silently changing the SDK. The versions
+  # below come from the DONE file of the first unpinned run (2026-08).
   windows-sdk = stdenvNoCC.mkDerivation {
     pname = "windows-sdk-xwin-cache";
     version = "17";
@@ -41,16 +47,25 @@ let
     buildCommand = ''
       XWIN_CACHE_DIR=$out XWIN_ARCH=x86_64 XWIN_ACCEPT_LICENSE=1 \
         XWIN_HTTP_RETRIES=10 \
+        XWIN_SDK_VERSION=10.0.26100 XWIN_CRT_VERSION=14.44.17.14 \
         cargo-xwin xwin cache xwin
+      # Trim the splat: the Rust build only needs the CRT headers/libs, the
+      # SDK import libs, and the UCRT C headers (sdk/include/ucrt — string.h
+      # etc., required by zstd-sys; crt/include only holds C++ STL headers).
+      # The Windows SDK C++ headers (um/shared/winrt/cppwinrt, ~350 MB) are
+      # never read by rustc/clang-cl. Dropping them here shrinks both the
+      # store path and the per-build copy in the main derivation.
+      # cargo-xwin's DONE check only reads the first line (architectures),
+      # so it never notices the removed dirs.
+      find "$out/xwin/sdk/include" -mindepth 1 -maxdepth 1 ! -name ucrt -exec rm -rf {} +
     '';
 
     outputHashMode = "recursive";
     outputHashAlgo = "sha256";
-    # Pinned 2026-08: xwin manifest v17 (x86_64 desktop). Update by deleting
-    # the hash, building once (network), and pasting the reported hash.
-    outputHash = "sha256-Q3+6i3wTM0OKVJ+mtJCceyBeeuAdAVZddyg2VJUNA6E=";
-
-    impureEnvVars = lib.fetchers.proxyImpureEnvVars;
+    # Pinned 2026-08: xwin manifest v17, x86_64 desktop, SDK 10.0.26100,
+    # CRT 14.44.17.14, sdk/include trimmed to ucrt. Update by deleting the
+    # hash, building once (network), and pasting the reported hash.
+    outputHash = "sha256-uZS5PJ1712mFC/oRZcp0KcQD3fusVUG47Ig+b1nvMtI=";
   };
 in
 stdenv.mkDerivation {
