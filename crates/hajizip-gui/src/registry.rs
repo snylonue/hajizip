@@ -5,24 +5,37 @@
 //! implementations it wants and registers them into a [`Registry`]. This is the
 //! only place in the GUI that names concrete formats.
 //!
-//! Core M1 landed the first three formats and they are wired here: ZIP and TAR
-//! as direct archives, plus the gzip codec so `.tar.gz` / `.tgz` open through
-//! the registry's codec→archive chain. As further formats land (xz, 7z, zstd,
-//! ...), add a single `.register_archive(..)` / `.register_codec(..)` line.
-//! Formats that are not registered degrade gracefully: opening them yields an
-//! "unsupported format" error instead of a crash.
+//! Every format core currently implements is wired here:
+//!
+//! * **Archives** — ZIP, TAR and 7z (`SevenZipFormat`), opened directly.
+//! * **Codecs** — gzip and xz, so `.tar.gz` / `.tgz` and `.tar.xz` open
+//!   through the registry's codec→archive chain.
+//!
+//! As further formats land (zstd, bzip2, ...), add a single
+//! `.register_archive(..)` / `.register_codec(..)` line. Formats that are not
+//! registered degrade gracefully: opening them yields an "unsupported format"
+//! error instead of a crash.
 
 use hajizip_core::Registry;
+use hajizip_core::archive::sevenz::SevenZipFormat;
 use hajizip_core::archive::tar::TarFormat;
 use hajizip_core::archive::zip::ZipFormat;
 use hajizip_core::codec::gzip::GzipFormat;
+use hajizip_core::codec::xz::XzFormat;
 
 /// Build the registry of all formats the GUI currently supports.
+///
+/// This is the GUI's composition root: it references every concrete format
+/// `hajizip-core` provides today (ZIP, TAR, 7z archives; gzip, xz codecs) and
+/// registers them into a [`Registry`]. Adding a new core format is a single
+/// `.register_*` line here.
 pub fn compose_registry() -> Registry {
     Registry::new()
         .register_archive(ZipFormat)
         .register_archive(TarFormat)
+        .register_archive(SevenZipFormat)
         .register_codec(GzipFormat)
+        .register_codec(XzFormat)
 }
 
 #[cfg(test)]
@@ -62,10 +75,10 @@ mod tests {
     }
 
     #[test]
-    fn composed_registry_has_the_three_m1_formats() {
+    fn composed_registry_has_all_core_formats() {
         let reg = compose_registry();
-        assert_eq!(reg.archive_formats().len(), 2, "zip + tar");
-        assert_eq!(reg.codecs().len(), 1, "gzip");
+        assert_eq!(reg.archive_formats().len(), 3, "zip + tar + 7z");
+        assert_eq!(reg.codecs().len(), 2, "gzip + xz");
     }
 
     #[test]
@@ -137,5 +150,73 @@ mod tests {
         let entries = archive.entries().unwrap();
         assert_eq!(entries.len(), 1);
         assert!(entries[0].encrypted, "entry must be flagged encrypted");
+    }
+
+    // ---- M2 formats: 7z archive + xz codec ----
+
+    #[test]
+    fn sevenz_fixture_opens_and_lists_entries() {
+        let archive = open("7z/basic.7z").expect("7z opens via composed registry");
+        assert_eq!(names(archive.as_ref()), ["a.txt", "dir", "dir/b.txt"]);
+        let entries = archive.entries().unwrap();
+        let dir = entries.iter().find(|e| e.path.as_str() == "dir").unwrap();
+        assert_eq!(dir.kind, NodeKind::Dir);
+    }
+
+    #[test]
+    fn sevenz_zstd_and_nonsolid_open() {
+        // The ZSTD method (C-FFI zstd feature) and non-solid (random-access)
+        // layouts both decode through the composed registry.
+        for rel in ["7z/zstd.7z", "7z/nonsolid.7z"] {
+            let archive =
+                open(rel).unwrap_or_else(|e| panic!("{rel} opens via composed registry: {e}"));
+            assert_eq!(
+                names(archive.as_ref()),
+                ["a.txt", "dir", "dir/b.txt"],
+                "{rel}"
+            );
+        }
+    }
+
+    #[test]
+    fn tar_xz_opens_through_the_codec_chain() {
+        let archive = open("tar/basic.tar.xz").expect("tar.xz opens via xz→tar chain");
+        assert_eq!(names(archive.as_ref()), ["a.txt", "dir", "dir/b.txt"]);
+    }
+
+    #[test]
+    fn bare_xz_is_not_an_archive() {
+        // A standalone .xz stream decompresses to plain text, which is not an
+        // archive: the registry must report UnsupportedFormat, not crash.
+        let err = open("xz/hello.txt.xz")
+            .err()
+            .expect("bare .xz has no file tree");
+        assert!(
+            matches!(err, Error::UnsupportedFormat(_)),
+            "expected UnsupportedFormat, got {err:?}"
+        );
+    }
+
+    #[test]
+    fn encrypted_7z_header_requires_password() {
+        // enc.7z encrypts its header: opening without a password must report
+        // PasswordRequired; the right password opens it fully.
+        let err = compose_registry()
+            .open_archive(Source::Path(fixture("7z/enc.7z")), &OpenOptions::default())
+            .err()
+            .expect("encrypted header needs a password");
+        assert!(
+            matches!(err, Error::PasswordRequired),
+            "expected PasswordRequired, got {err:?}"
+        );
+
+        let opts = OpenOptions {
+            password: Some(hajizip_core::Secret::new("secret")),
+            ..OpenOptions::default()
+        };
+        let archive = compose_registry()
+            .open_archive(Source::Path(fixture("7z/enc.7z")), &opts)
+            .expect("opens with the right password");
+        assert_eq!(names(archive.as_ref()), ["a.txt", "dir", "dir/b.txt"]);
     }
 }

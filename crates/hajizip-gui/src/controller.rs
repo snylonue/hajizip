@@ -1350,4 +1350,147 @@ mod tests {
         }
         let _ = std::fs::remove_dir_all(&dest);
     }
+
+    // ---- M2 formats end-to-end (7z archive + xz codec) ----
+
+    #[test]
+    fn real_sevenz_opens_navigates_and_extracts() {
+        let mut core = real_core();
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("7z/basic.7z"),
+                password: None,
+            },
+        );
+        let entries = match &events[..] {
+            [Event::Opened { entries, .. }] => entries.clone(),
+            other => panic!("expected Opened, got {other:?}"),
+        };
+        assert_eq!(entries.len(), 3, "a.txt + dir/ + dir/b.txt");
+
+        // Enter dir/ → Navigated with a breadcrumb, then back to the root.
+        let events = run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("dir").unwrap(),
+            },
+        );
+        match &events[..] {
+            [
+                Event::Navigated {
+                    focus, breadcrumb, ..
+                },
+            ] => {
+                assert_eq!(focus.as_ref().unwrap().as_str(), "dir");
+                assert_eq!(breadcrumb.len(), 2, "archive name + dir");
+            }
+            other => panic!("expected Navigated, got {other:?}"),
+        }
+        run(&mut core, &Intent::Back);
+
+        // Extract everything and verify the bytes on disk.
+        let dest = temp_dir("e2e-7z");
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 3, "2 files + 1 dir");
+                assert!(report.failed.is_empty(), "failed: {:?}", report.failed);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert_eq!(std::fs::metadata(dest.join("a.txt")).unwrap().len(), 16);
+        assert_eq!(std::fs::metadata(dest.join("dir/b.txt")).unwrap().len(), 15);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn real_tar_xz_opens_through_the_codec_chain() {
+        let mut core = real_core();
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("tar/basic.tar.xz"),
+                password: None,
+            },
+        );
+        match &events[..] {
+            [Event::Opened { entries, .. }] => {
+                assert_eq!(entries.len(), 3, "tar.xz should list a.txt/dir/dir-b.txt")
+            }
+            other => panic!("expected Opened, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_bare_xz_is_rejected_gracefully() {
+        let mut core = real_core();
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("xz/hello.txt.xz"),
+                password: None,
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::Error(_)]),
+            "expected a graceful Error, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn real_encrypted_7z_password_flow() {
+        let mut core = real_core();
+
+        // enc.7z encrypts its header: opening without a password asks for one.
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("7z/enc.7z"),
+                password: None,
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::PasswordRequired { .. }]),
+            "expected PasswordRequired, got {events:?}"
+        );
+
+        // The right password opens it fully…
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("7z/enc.7z"),
+                password: Some("secret".to_string()),
+            },
+        );
+        match &events[..] {
+            [Event::Opened { entries, .. }] => assert_eq!(entries.len(), 3),
+            other => panic!("expected Opened, got {other:?}"),
+        }
+
+        // …and extraction decodes the encrypted content.
+        let dest = temp_dir("e2e-7z-enc");
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 3);
+                assert!(report.failed.is_empty(), "failed: {:?}", report.failed);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert_eq!(std::fs::metadata(dest.join("a.txt")).unwrap().len(), 16);
+        let _ = std::fs::remove_dir_all(&dest);
+    }
 }
