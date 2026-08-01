@@ -14,10 +14,15 @@ const SNIFF_BYTES: usize = 512;
 
 /// Composes concrete formats and opens archives by auto-detection.
 ///
-/// The registry holds **no built-in format list**; the application registers
-/// the concrete formats it supports (the composition root, typically the GUI)
-/// by referencing their implementations. Adding a format never changes this
-/// type.
+/// The registry type holds **no mandatory format list**: an application can
+/// always compose a custom subset with [`Registry::new`] +
+/// [`register_archive`](Self::register_archive) /
+/// [`register_codec`](Self::register_codec) (e.g. a build that omits the
+/// approved `unsafe`-exception formats). For the common case, core also ships
+/// [`Registry::with_all_formats`] — the canonical composition of *every*
+/// format core implements, which core keeps up to date as formats are added,
+/// so front-ends can simply reference it instead of enumerating formats
+/// themselves. Adding a format changes `with_all_formats`, never this type.
 #[derive(Default)]
 pub struct Registry {
     archive_formats: Vec<Arc<dyn ArchiveFormat>>,
@@ -28,6 +33,28 @@ impl Registry {
     /// Create an empty registry.
     pub fn new() -> Self {
         Self::default()
+    }
+
+    /// Create a registry with **every format core implements** registered.
+    ///
+    /// This is the canonical, batteries-included composition that core
+    /// maintains: when a new format lands in core it is added here, and every
+    /// front-end that calls this constructor picks it up automatically (no
+    /// per-application enumeration to keep in sync).
+    ///
+    /// It includes the formats that are approved `unsafe` exceptions (`tar`'s
+    /// internal `unsafe`, 7z's C-FFI `zstd` method). Applications that need a
+    /// restricted subset (for example a strictly pure-Rust build) should
+    /// compose manually with [`Registry::new`] plus specific `register_*`
+    /// calls instead.
+    pub fn with_all_formats() -> Self {
+        // The single place in core that enumerates the concrete formats.
+        Self::new()
+            .register_archive(crate::archive::zip::ZipFormat)
+            .register_archive(crate::archive::tar::TarFormat)
+            .register_archive(crate::archive::sevenz::SevenZipFormat)
+            .register_codec(crate::codec::gzip::GzipFormat)
+            .register_codec(crate::codec::xz::XzFormat)
     }
 
     /// Register an archive format (builder-style).
@@ -172,6 +199,39 @@ mod tests {
         let fmt = reg.detect_archive(b"FAKEdata", None).expect("detected");
         assert_eq!(fmt.id(), "fake");
         assert_eq!(fmt.display_name(), "Fake");
+    }
+
+    #[test]
+    fn with_all_formats_registers_every_core_format() {
+        let reg = Registry::with_all_formats();
+        // Keep these counts in sync with the formats core implements: zip,
+        // tar and 7z archives; gzip and xz codecs.
+        assert_eq!(reg.archive_formats().len(), 3, "zip + tar + 7z");
+        assert_eq!(reg.codecs().len(), 2, "gzip + xz");
+        // Each one is reachable through auto-detection (magic bytes, or the
+        // extension fallback for tar whose magic sits at offset 257).
+        assert_eq!(
+            reg.detect_archive(b"PK\x03\x04", None).expect("zip").id(),
+            "zip"
+        );
+        assert_eq!(
+            reg.detect_archive(b"7z\xbc\xaf\x27\x1c", None)
+                .expect("7z")
+                .id(),
+            "7z"
+        );
+        assert_eq!(
+            reg.detect_archive(b"", Some("tar")).expect("tar").id(),
+            "tar"
+        );
+        assert_eq!(
+            reg.detect_codec(b"\x1f\x8b", None).expect("gzip").id(),
+            "gzip"
+        );
+        assert_eq!(
+            reg.detect_codec(b"\xfd7zXZ\x00", None).expect("xz").id(),
+            "xz"
+        );
     }
 
     #[test]

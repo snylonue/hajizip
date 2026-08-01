@@ -1,41 +1,28 @@
-//! The GUI's composition root: which formats the application supports.
+//! The registry the GUI ships: every format `hajizip-core` implements.
 //!
-//! Per `architecture.md` §4.4 and §5.1, the abstract core does not enumerate
-//! formats; the application (here, the GUI) references the concrete format
-//! implementations it wants and registers them into a [`Registry`]. This is the
-//! only place in the GUI that names concrete formats.
+//! Format enumeration lives in **core**, not here: core maintains
+//! [`Registry::with_all_formats`] as the canonical composition of all formats
+//! it implements and keeps it up to date as formats land (see
+//! `architecture.md` §4.4 and §5.1). The GUI simply references that
+//! composition through [`compose_registry`], so wiring a newly added core
+//! format never requires a GUI change.
 //!
-//! Every format core currently implements is wired here:
-//!
-//! * **Archives** — ZIP, TAR and 7z (`SevenZipFormat`), opened directly.
-//! * **Codecs** — gzip and xz, so `.tar.gz` / `.tgz` and `.tar.xz` open
-//!   through the registry's codec→archive chain.
-//!
-//! As further formats land (zstd, bzip2, ...), add a single
-//! `.register_archive(..)` / `.register_codec(..)` line. Formats that are not
-//! registered degrade gracefully: opening them yields an "unsupported format"
-//! error instead of a crash.
+//! [`compose_registry`] is a thin reference to core's composition (not a
+//! GUI-side enumeration). It remains as the app's single, named seam for the
+//! registry it ships: a build that needs a restricted format subset can
+//! compose a [`Registry`] manually (`Registry::new()` + `register_*`) instead
+//! of calling it. Formats that are not registered degrade gracefully: opening
+//! them yields an "unsupported format" error instead of a crash.
 
 use hajizip_core::Registry;
-use hajizip_core::archive::sevenz::SevenZipFormat;
-use hajizip_core::archive::tar::TarFormat;
-use hajizip_core::archive::zip::ZipFormat;
-use hajizip_core::codec::gzip::GzipFormat;
-use hajizip_core::codec::xz::XzFormat;
 
-/// Build the registry of all formats the GUI currently supports.
+/// The registry of all formats the GUI supports.
 ///
-/// This is the GUI's composition root: it references every concrete format
-/// `hajizip-core` provides today (ZIP, TAR, 7z archives; gzip, xz codecs) and
-/// registers them into a [`Registry`]. Adding a new core format is a single
-/// `.register_*` line here.
+/// Delegates to core's canonical [`Registry::with_all_formats`], so the GUI
+/// automatically supports every format core implements (ZIP, TAR, 7z
+/// archives; gzip, xz codecs today) without enumerating them here.
 pub fn compose_registry() -> Registry {
-    Registry::new()
-        .register_archive(ZipFormat)
-        .register_archive(TarFormat)
-        .register_archive(SevenZipFormat)
-        .register_codec(GzipFormat)
-        .register_codec(XzFormat)
+    Registry::with_all_formats()
 }
 
 #[cfg(test)]
