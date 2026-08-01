@@ -46,7 +46,6 @@ let
 
     buildCommand = ''
       XWIN_CACHE_DIR=$out XWIN_ARCH=x86_64 XWIN_ACCEPT_LICENSE=1 \
-        XWIN_HTTP_RETRIES=10 \
         XWIN_SDK_VERSION=10.0.26100 XWIN_CRT_VERSION=14.44.17.14 \
         cargo-xwin xwin cache xwin
       # Trim the splat: the Rust build only needs the CRT headers/libs, the
