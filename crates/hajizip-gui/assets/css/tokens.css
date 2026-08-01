@@ -1,0 +1,51 @@
+/* ==========================================================================
+   Design Tokens
+   Centralised CSS custom properties for colours, shadows, radii.
+   Change a value here and every component picks it up automatically.
+   ========================================================================== */
+
+:root {
+    /* Brand / accent */
+    --c-primary: #2563eb;
+    --c-primary-hover: #1d4ed8;
+    --c-primary-light: #dbeafe;
+    --c-primary-bg: #eff6ff;
+
+    /* Surfaces */
+    --c-bg: #f1f5f9;
+    --c-surface: #ffffff;
+    --c-surface-alt: #f8fafc;
+
+    /* Borders */
+    --c-border: #e2e8f0;
+    --c-border-light: #f1f5f9;
+
+    /* Text */
+    --c-text: #1e293b;
+    --c-text-2: #475569;
+    --c-text-3: #94a3b8;
+
+    /* Interactive states */
+    --c-hover: #f1f5f9;
+    --c-selected: #eff6ff;
+    --c-selected-border: #bfdbfe;
+
+    /* Semantic */
+    --c-danger: #dc2626;
+    --c-danger-hover: #b91c1c;
+    --c-success: #16a34a;
+    --c-warning: #d97706;
+
+    /* Elevation */
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07),
+                 0 2px 4px -2px rgba(0, 0, 0, 0.05);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08),
+                 0 4px 6px -4px rgba(0, 0, 0, 0.04);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
+                 0 8px 10px -6px rgba(0, 0, 0, 0.06);
+
+    /* Shape */
+    --radius: 6px;
+    --radius-lg: 10px;
+}

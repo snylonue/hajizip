@@ -11,6 +11,35 @@ use crate::config::AppConfig;
 use crate::controller::{BreadcrumbSegment, ProgressUpdate};
 use crate::viewmodel;
 
+// ---------------------------------------------------------------------------
+// Global CSS design system
+// ---------------------------------------------------------------------------
+//
+// Stylesheets live in `assets/css/` as plain `.css` files so editors provide
+// syntax highlighting, linting, and auto-completion.  `include_str!` embeds
+// them at compile time — zero runtime I/O, zero extra dependencies.
+//
+// The files are concatenated in cascade order:
+//   tokens  →  base  →  layout  →  components
+
+/// Complete CSS stylesheet for the application.
+///
+/// Injected once at the root via a `<style>` element. Uses CSS custom
+/// properties for a consistent, themeable design.
+pub const CSS: &str = concat!(
+    include_str!("../assets/css/tokens.css"),
+    "\n",
+    include_str!("../assets/css/base.css"),
+    "\n",
+    include_str!("../assets/css/layout.css"),
+    "\n",
+    include_str!("../assets/css/components.css"),
+);
+
+// ---------------------------------------------------------------------------
+// Breadcrumb
+// ---------------------------------------------------------------------------
+
 /// Clickable breadcrumb bar.
 #[component]
 pub fn Breadcrumb(
@@ -19,27 +48,28 @@ pub fn Breadcrumb(
     /// Called with the segment index when a crumb is clicked.
     on_jump: EventHandler<usize>,
 ) -> Element {
+    let last = segments.len().saturating_sub(1);
     rsx! {
-        nav {
-            class: "breadcrumb",
-            style: "display: flex; flex-wrap: wrap; gap: 4px; padding: 6px 10px; \
-                    border-bottom: 1px solid #ddd; background: #fafafa; align-items: center;",
+        nav { class: "breadcrumb",
             for (i, segment) in segments.iter().enumerate() {
                 {
                     let label = segment.label.clone();
                     let index = i;
-                    let separator = (i > 0).then_some(());
+                    let is_last = i == last;
                     rsx! {
                         Fragment {
                             key: "{index}",
-                            if separator.is_some() {
-                                span { style: "color: #999;", "/" }
+                            if i > 0 {
+                                span { class: "breadcrumb-sep", "›" }
                             }
-                            button {
-                                style: "border: none; background: none; cursor: pointer; color: #2b5c8a; \
-                                        font: inherit; padding: 2px 4px; border-radius: 4px;",
-                                onclick: move |_| on_jump.call(index),
-                                "{label}"
+                            if is_last {
+                                span { class: "breadcrumb-current", "{label}" }
+                            } else {
+                                button {
+                                    class: "breadcrumb-link",
+                                    onclick: move |_| on_jump.call(index),
+                                    "{label}"
+                                }
                             }
                         }
                     }
@@ -49,6 +79,10 @@ pub fn Breadcrumb(
     }
 }
 
+// ---------------------------------------------------------------------------
+// Tree view
+// ---------------------------------------------------------------------------
+
 /// A row of the left tree panel.
 #[derive(Clone)]
 struct TreeRowData {
@@ -57,22 +91,21 @@ struct TreeRowData {
     is_dir: bool,
 }
 
-/// Precomputed display data for one tree row (avoids complex expressions in
-/// the rsx `for` loop body).
+/// Precomputed display data for one tree row.
 struct RowView {
     path: EntryPath,
     is_dir: bool,
     indent: usize,
     arrow: &'static str,
+    icon: &'static str,
     name: String,
-    weight: &'static str,
+    row_class: &'static str,
 }
 
 /// Left tree panel: the archive's directory structure, expandable per dir.
 #[component]
 pub fn TreeView(
-    /// Flat listing of the current archive (as a signal so expansion and
-    /// navigation re-render the tree).
+    /// Flat listing of the current archive.
     entries: Signal<Vec<EntryMeta>>,
     /// Directories currently expanded (full paths).
     expanded: Signal<HashSet<EntryPath>>,
@@ -87,31 +120,34 @@ pub fn TreeView(
             let is_dir = row.is_dir;
             let is_expanded = expanded.read().contains(&path);
             let arrow = if !is_dir {
-                " "
+                ""
             } else if is_expanded {
-                "▼"
+                "▾"
             } else {
-                "▶"
+                "▸"
             };
+            let icon = if is_dir { "📁" } else { "📄" };
             let name = path.as_str().rsplit('/').next().unwrap_or("").to_string();
             RowView {
                 path,
                 is_dir,
-                indent: row.depth * 16,
+                indent: row.depth * 18,
                 arrow,
+                icon,
                 name,
-                weight: if is_dir { "600" } else { "400" },
+                row_class: if is_dir {
+                    "tree-row tree-row-dir"
+                } else {
+                    "tree-row tree-row-file"
+                },
             }
         })
         .collect();
 
     rsx! {
-        div {
-            class: "tree",
-            style: "width: 280px; min-width: 200px; overflow: auto; border-right: 1px solid #ddd; \
-                    padding: 6px; font-family: monospace;",
+        div { class: "tree",
             for (i, row) in views.iter().enumerate() {
-                {render_tree_row(row, i, expanded, on_navigate)}
+                { render_tree_row(row, i, expanded, on_navigate) }
             }
         }
     }
@@ -128,15 +164,16 @@ fn render_tree_row(
     let is_dir = row.is_dir;
     let indent = row.indent;
     let arrow = row.arrow;
+    let icon = row.icon;
     let name = row.name.clone();
-    let weight = row.weight;
+    let row_class = row.row_class;
     let toggle_path = path.clone();
     let nav_path = path.clone();
     rsx! {
         div {
             key: "{i}",
-            style: "display: flex; align-items: center; gap: 4px; padding: 2px 4px; \
-                    white-space: nowrap; border-radius: 4px;",
+            class: "{row_class}",
+            style: "padding-left: {indent}px;",
             onclick: move |_| {
                 if is_dir {
                     let mut set = expanded.write();
@@ -150,9 +187,9 @@ fn render_tree_row(
                     on_navigate.call(nav_path.clone());
                 }
             },
-            span { style: "width: {indent}px; display: inline-block;", }
-            span { "{arrow}" }
-            span { style: "font-weight: {weight};", "{name}" }
+            span { class: "tree-arrow", "{arrow}" }
+            span { class: "tree-icon", "{icon}" }
+            span { class: "tree-name", "{name}" }
         }
     }
 }
@@ -169,10 +206,14 @@ fn build_rows(entries: &[EntryMeta], expanded: HashSet<EntryPath>) -> Vec<TreeRo
         .collect()
 }
 
+// ---------------------------------------------------------------------------
+// File list
+// ---------------------------------------------------------------------------
+
 /// Precomputed display data for one file-list row.
 struct FileRowView {
     path: EntryPath,
-    bg: &'static str,
+    selected: bool,
     name: String,
     lock: &'static str,
     size: String,
@@ -183,8 +224,7 @@ struct FileRowView {
 /// Right file list: children of the current focus directory.
 #[component]
 pub fn FileList(
-    /// Flat listing of the current archive (as a signal so selection and
-    /// navigation re-render the list).
+    /// Flat listing of the current archive.
     entries: Signal<Vec<EntryMeta>>,
     /// Directory currently in focus (None = archive root).
     focus: Signal<Option<EntryPath>>,
@@ -203,11 +243,7 @@ pub fn FileList(
         .map(|entry| {
             let path = entry.path.clone();
             FileRowView {
-                bg: if selected_now.contains(&path) {
-                    "#dbe9f7"
-                } else {
-                    "transparent"
-                },
+                selected: selected_now.contains(&path),
                 name: path.as_str().rsplit('/').next().unwrap_or("").to_string(),
                 lock: if entry.encrypted { "🔒" } else { "" },
                 size: viewmodel::size_label(entry),
@@ -219,24 +255,20 @@ pub fn FileList(
         .collect();
 
     rsx! {
-        div {
-            class: "filelist",
-            style: "flex: 1; overflow: auto; font-family: sans-serif;",
+        div { class: "filelist",
             table {
-                style: "width: 100%; border-collapse: collapse;",
                 thead {
                     tr {
-                        style: "text-align: left; background: #f5f5f5; position: sticky; top: 0;",
-                        th { style: "padding: 6px 10px;", "" }
-                        th { style: "padding: 6px 10px;", "Name" }
-                        th { style: "padding: 6px 10px; text-align: right;", "Size" }
-                        th { style: "padding: 6px 10px;", "Type" }
-                        th { style: "padding: 6px 10px;", "Modified" }
+                        th { class: "col-lock", "" }
+                        th { "Name" }
+                        th { class: "col-size", "Size" }
+                        th { class: "col-type", "Type" }
+                        th { class: "col-modified", "Modified" }
                     }
                 }
                 tbody {
                     for (i, row) in views.iter().enumerate() {
-                        {render_file_row(row, i, selected, on_open)}
+                        { render_file_row(row, i, selected, on_open) }
                     }
                 }
             }
@@ -252,7 +284,6 @@ fn render_file_row(
     on_open: EventHandler<EntryPath>,
 ) -> Element {
     let path = row.path.clone();
-    let bg = row.bg;
     let name = row.name.clone();
     let lock = row.lock;
     let size = row.size.clone();
@@ -260,10 +291,15 @@ fn render_file_row(
     let time = row.time.clone();
     let toggle_path = path.clone();
     let open_path = path.clone();
+    let row_class = if row.selected {
+        "file-row file-row-selected"
+    } else {
+        "file-row"
+    };
     rsx! {
         tr {
             key: "{i}",
-            style: "cursor: default; background: {bg};",
+            class: "{row_class}",
             onclick: move |_| {
                 let mut set = selected.write();
                 if !set.remove(&toggle_path) {
@@ -271,14 +307,18 @@ fn render_file_row(
                 }
             },
             ondoubleclick: move |_| on_open.call(open_path.clone()),
-            td { style: "padding: 4px 10px;", "{lock}" }
-            td { style: "padding: 4px 10px;", "{name}" }
-            td { style: "padding: 4px 10px; text-align: right;", "{size}" }
-            td { style: "padding: 4px 10px;", "{kind}" }
-            td { style: "padding: 4px 10px; color: #777;", "{time}" }
+            td { class: "col-lock", "{lock}" }
+            td { class: "col-name", "{name}" }
+            td { class: "col-size", "{size}" }
+            td { class: "col-type", "{kind}" }
+            td { class: "col-modified", "{time}" }
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Password dialog
+// ---------------------------------------------------------------------------
 
 /// Modal asking for a password to open an encrypted archive.
 #[component]
@@ -294,35 +334,25 @@ pub fn PasswordDialog(
 ) -> Element {
     let mut value = use_signal(String::new);
     rsx! {
-        div {
-            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; \
-                    align-items: center; justify-content: center; z-index: 100;",
-            div {
-                style: "background: white; border-radius: 8px; padding: 20px; width: 380px; \
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.25);",
-                h3 { "Password required" }
-                p { style: "color: #555; font-size: 13px; word-break: break-all;", "{path}" }
+        div { class: "modal-overlay",
+            div { class: "modal-card modal-card-sm",
+                h3 { class: "modal-title", "🔐 Password Required" }
+                p { class: "modal-desc", "{path}" }
                 if let Some(err) = error {
-                    p { style: "color: #b00020; font-size: 13px;", "{err}" }
+                    p { class: "modal-error", "{err}" }
                 }
                 input {
+                    class: "modal-input",
                     r#type: "password",
                     value: "{value}",
-                    placeholder: "Password",
-                    style: "width: 100%; padding: 8px; box-sizing: border-box; margin: 8px 0;",
+                    placeholder: "Enter password…",
                     oninput: move |e| value.set(e.value()),
                 }
-                div { style: "display: flex; justify-content: flex-end; gap: 8px;",
+                div { class: "modal-actions",
+                    button { class: "btn", onclick: move |_| on_cancel.call(()), "Cancel" }
                     button {
-                        onclick: move |_| on_cancel.call(()),
-                        style: "padding: 6px 14px; border: 1px solid #ccc; background: white; \
-                                border-radius: 4px; cursor: pointer;",
-                        "Cancel"
-                    }
-                    button {
+                        class: "btn btn-primary",
                         onclick: move |_| on_submit.call(value.read().clone()),
-                        style: "padding: 6px 14px; border: none; background: #2b5c8a; color: white; \
-                                border-radius: 4px; cursor: pointer;",
                         "Unlock"
                     }
                 }
@@ -330,6 +360,10 @@ pub fn PasswordDialog(
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Progress dialog
+// ---------------------------------------------------------------------------
 
 /// Modal showing extraction progress with a cancel button.
 #[component]
@@ -341,31 +375,16 @@ pub fn ProgressDialog(
 ) -> Element {
     let (percent, label) = progress_label(&progress);
     rsx! {
-        div {
-            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; \
-                    align-items: center; justify-content: center; z-index: 100;",
-            div {
-                style: "background: white; border-radius: 8px; padding: 20px; width: 440px; \
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.25);",
-                h3 { "Extracting…" }
-                p {
-                    style: "color: #555; font-size: 13px; word-break: break-all;",
-                    "{label}"
+        div { class: "modal-overlay",
+            div { class: "modal-card modal-card-md",
+                h3 { class: "modal-title", "📦 Extracting…" }
+                p { class: "modal-desc", "{label}" }
+                div { class: "progress-track",
+                    div { class: "progress-fill", style: "width: {percent}%;" }
                 }
-                div {
-                    style: "height: 10px; background: #eee; border-radius: 5px; overflow: hidden; margin: 12px 0;",
-                    div {
-                        style: "height: 100%; width: {percent}%; background: #2b5c8a; transition: width 0.2s;",
-                    }
-                }
-                p { style: "color: #777; font-size: 12px;", "Entries done: {progress.entries_done}" }
-                div { style: "display: flex; justify-content: flex-end;",
-                    button {
-                        onclick: move |_| on_cancel.call(()),
-                        style: "padding: 6px 14px; border: none; background: #b00020; color: white; \
-                                border-radius: 4px; cursor: pointer;",
-                        "Cancel"
-                    }
+                p { class: "progress-info", "{progress.entries_done} entries processed" }
+                div { class: "modal-actions",
+                    button { class: "btn btn-danger", onclick: move |_| on_cancel.call(()), "Cancel" }
                 }
             }
         }
@@ -385,11 +404,14 @@ fn progress_label(progress: &ProgressUpdate) -> (u32, String) {
     (percent.min(100), label)
 }
 
+// ---------------------------------------------------------------------------
+// Settings panel
+// ---------------------------------------------------------------------------
+
 /// Settings panel (modal): encoding, overwrite policy, mtime preservation.
 #[component]
 pub fn SettingsPanel(
-    /// Current config values shown in the controls (as a signal so changes
-    /// from `ConfigChanged` events re-render the panel).
+    /// Current config values shown in the controls.
     config: Signal<AppConfig>,
     /// Called when the user picks a filename encoding.
     on_encoding: EventHandler<FilenameEncoding>,
@@ -407,35 +429,31 @@ pub fn SettingsPanel(
     let ovr_value = overwrite_value(cfg.overwrite_policy);
 
     rsx! {
-        div {
-            style: "position: fixed; inset: 0; background: rgba(0,0,0,0.35); display: flex; \
-                    align-items: center; justify-content: center; z-index: 100;",
-            div {
-                style: "background: white; border-radius: 8px; padding: 20px; width: 420px; \
-                        box-shadow: 0 4px 20px rgba(0,0,0,0.25);",
-                h3 { "Settings" }
-                div { style: "margin: 10px 0;",
-                    label { style: "font-size: 13px;", "Filename encoding" }
+        div { class: "modal-overlay",
+            div { class: "modal-card modal-card-lg",
+                h3 { class: "modal-title", "⚙️ Settings" }
+                div { class: "settings-group",
+                    label { class: "settings-label", "Filename encoding" }
                     select {
-                        style: "width: 100%; padding: 6px; margin-top: 4px;",
+                        class: "settings-select",
                         value: enc_value,
                         onchange: move |e| {
                             if let Some(enc) = parse_encoding(&e.value()) {
                                 on_encoding.call(enc);
                             }
                         },
-                        option { value: "auto", "Auto" }
+                        option { value: "auto", "Auto (detect)" }
                         option { value: "utf8", "UTF-8" }
-                        option { value: "gbk", "GBK" }
-                        option { value: "shift-jis", "Shift-JIS" }
-                        option { value: "big5", "Big5" }
-                        option { value: "cp437", "CP437" }
+                        option { value: "gbk", "GBK (Simplified Chinese)" }
+                        option { value: "shift-jis", "Shift-JIS (Japanese)" }
+                        option { value: "big5", "Big5 (Traditional Chinese)" }
+                        option { value: "cp437", "CP437 (DOS)" }
                     }
                 }
-                div { style: "margin: 10px 0;",
-                    label { style: "font-size: 13px;", "Overwrite existing files" }
+                div { class: "settings-group",
+                    label { class: "settings-label", "Overwrite existing files" }
                     select {
-                        style: "width: 100%; padding: 6px; margin-top: 4px;",
+                        class: "settings-select",
                         value: ovr_value,
                         onchange: move |e| {
                             if let Some(policy) = parse_overwrite(&e.value()) {
@@ -448,32 +466,27 @@ pub fn SettingsPanel(
                         option { value: "newer", "Overwrite if newer" }
                     }
                 }
-                div { style: "margin: 10px 0; display: flex; align-items: center; gap: 8px;",
+                div { class: "settings-checkbox-row",
                     input {
                         r#type: "checkbox",
+                        id: "preserve-mtime",
                         checked: cfg.preserve_mtime,
                         onchange: move |e| on_mtime.call(e.value().parse().unwrap_or(true)),
                     }
-                    label { style: "font-size: 13px;", "Preserve modification times" }
+                    label { r#for: "preserve-mtime", "Preserve modification times" }
                 }
-                div { style: "display: flex; justify-content: space-between; margin-top: 16px;",
-                    button {
-                        onclick: move |_| on_defaults.call(()),
-                        style: "padding: 6px 14px; border: 1px solid #ccc; background: white; \
-                                border-radius: 4px; cursor: pointer;",
-                        "Restore defaults"
-                    }
-                    button {
-                        onclick: move |_| on_close.call(()),
-                        style: "padding: 6px 14px; border: none; background: #2b5c8a; color: white; \
-                                border-radius: 4px; cursor: pointer;",
-                        "Close"
-                    }
+                div { class: "modal-actions-between",
+                    button { class: "btn", onclick: move |_| on_defaults.call(()), "Restore Defaults" }
+                    button { class: "btn btn-primary", onclick: move |_| on_close.call(()), "Close" }
                 }
             }
         }
     }
 }
+
+// ---------------------------------------------------------------------------
+// Encoding / overwrite helpers
+// ---------------------------------------------------------------------------
 
 /// `<option>` value for a filename encoding.
 fn encoding_value(e: FilenameEncoding) -> &'static str {

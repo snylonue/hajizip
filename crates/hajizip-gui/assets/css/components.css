@@ -1,0 +1,327 @@
+/* ==========================================================================
+   Components — Buttons, tree, file list, modals, progress, settings form
+   ========================================================================== */
+
+/* --- Buttons ------------------------------------------------------------- */
+.btn {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 5px;
+    padding: 6px 14px;
+    font-size: 12px;
+    font-weight: 500;
+    font-family: inherit;
+    border-radius: var(--radius);
+    cursor: pointer;
+    transition: all 0.15s ease;
+    border: 1px solid var(--c-border);
+    background: var(--c-surface);
+    color: var(--c-text);
+    white-space: nowrap;
+    line-height: 1.4;
+    user-select: none;
+}
+
+.btn:hover { background: var(--c-hover); border-color: #cbd5e1; }
+.btn:active { transform: scale(0.97); }
+.btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
+
+.btn-primary {
+    background: var(--c-primary);
+    color: white;
+    border-color: var(--c-primary);
+}
+
+.btn-primary:hover {
+    background: var(--c-primary-hover);
+    border-color: var(--c-primary-hover);
+}
+
+.btn-danger {
+    background: var(--c-danger);
+    color: white;
+    border-color: var(--c-danger);
+}
+
+.btn-danger:hover {
+    background: var(--c-danger-hover);
+    border-color: var(--c-danger-hover);
+}
+
+.btn-ghost {
+    border-color: transparent;
+    background: transparent;
+    color: var(--c-text-2);
+}
+
+.btn-ghost:hover { background: var(--c-hover); color: var(--c-text); }
+
+.btn-sm { padding: 4px 10px; font-size: 12px; }
+
+.btn-icon {
+    padding: 5px 8px;
+    font-size: 14px;
+    min-width: 30px;
+}
+
+/* --- Tree panel ---------------------------------------------------------- */
+.tree {
+    width: 250px;
+    min-width: 180px;
+    overflow: auto;
+    border-right: 1px solid var(--c-border);
+    padding: 6px 0;
+    background: var(--c-surface-alt);
+    font-size: 12px;
+}
+
+.tree-row {
+    display: flex;
+    align-items: center;
+    gap: 4px;
+    padding: 3px 8px 3px 0;
+    white-space: nowrap;
+    cursor: default;
+    transition: background 0.1s ease;
+    border-left: 3px solid transparent;
+}
+
+.tree-row:hover { background: var(--c-hover); }
+.tree-row-dir { font-weight: 600; color: var(--c-text); }
+.tree-row-file { font-weight: 400; color: var(--c-text-2); }
+
+.tree-arrow {
+    width: 16px;
+    text-align: center;
+    font-size: 9px;
+    color: var(--c-text-3);
+    flex-shrink: 0;
+}
+
+.tree-icon {
+    font-size: 14px;
+    flex-shrink: 0;
+    width: 18px;
+    text-align: center;
+}
+
+.tree-name {
+    overflow: hidden;
+    text-overflow: ellipsis;
+}
+
+/* --- File list ----------------------------------------------------------- */
+.filelist {
+    flex: 1;
+    overflow: auto;
+    background: var(--c-surface);
+}
+
+.filelist table {
+    width: 100%;
+    border-collapse: collapse;
+    table-layout: fixed;
+}
+
+.filelist thead { position: sticky; top: 0; z-index: 2; }
+
+.filelist th {
+    padding: 8px 12px;
+    text-align: left;
+    font-size: 11px;
+    font-weight: 600;
+    color: var(--c-text-2);
+    text-transform: uppercase;
+    letter-spacing: 0.4px;
+    background: var(--c-surface-alt);
+    border-bottom: 2px solid var(--c-border);
+    white-space: nowrap;
+    user-select: none;
+}
+
+.filelist th.col-size { text-align: right; width: 90px; }
+.filelist th.col-type { width: 70px; }
+.filelist th.col-modified { width: 150px; }
+.filelist th.col-lock { width: 32px; }
+
+.filelist td {
+    padding: 6px 12px;
+    font-size: 13px;
+    border-bottom: 1px solid var(--c-border-light);
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.filelist td.col-size {
+    text-align: right;
+    color: var(--c-text-2);
+    font-variant-numeric: tabular-nums;
+}
+
+.filelist td.col-type { color: var(--c-text-3); font-size: 12px; }
+.filelist td.col-modified { color: var(--c-text-3); font-size: 12px; }
+.filelist td.col-lock { text-align: center; }
+.filelist td.col-name { font-weight: 500; }
+
+.filelist tr.file-row {
+    cursor: default;
+    transition: background 0.1s ease;
+}
+
+.filelist tr.file-row:hover { background: var(--c-hover); }
+
+.filelist tr.file-row-selected { background: var(--c-selected) !important; }
+.filelist tr.file-row-selected td { border-bottom-color: var(--c-selected-border); }
+
+/* --- Modal overlay & card ------------------------------------------------ */
+.modal-overlay {
+    position: fixed;
+    inset: 0;
+    background: rgba(15, 23, 42, 0.45);
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    z-index: 100;
+    backdrop-filter: blur(2px);
+}
+
+.modal-card {
+    background: var(--c-surface);
+    border-radius: var(--radius-lg);
+    padding: 24px;
+    box-shadow: var(--shadow-xl);
+    max-width: 90vw;
+    max-height: 90vh;
+    overflow: auto;
+}
+
+.modal-card-sm { width: 380px; }
+.modal-card-md { width: 440px; }
+.modal-card-lg { width: 420px; }
+
+.modal-title {
+    font-size: 16px;
+    font-weight: 600;
+    margin-bottom: 12px;
+    color: var(--c-text);
+}
+
+.modal-desc {
+    color: var(--c-text-2);
+    font-size: 13px;
+    word-break: break-all;
+    margin-bottom: 8px;
+    line-height: 1.5;
+}
+
+.modal-error {
+    color: var(--c-danger);
+    font-size: 13px;
+    margin-bottom: 8px;
+    padding: 8px 12px;
+    background: #fef2f2;
+    border-radius: var(--radius);
+    border: 1px solid #fecaca;
+}
+
+.modal-input {
+    width: 100%;
+    padding: 8px 12px;
+    box-sizing: border-box;
+    margin: 8px 0;
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    font: inherit;
+    font-size: 13px;
+    transition: border-color 0.15s ease, box-shadow 0.15s ease;
+    outline: none;
+}
+
+.modal-input:focus {
+    border-color: var(--c-primary);
+    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+}
+
+.modal-actions {
+    display: flex;
+    justify-content: flex-end;
+    gap: 8px;
+    margin-top: 16px;
+}
+
+.modal-actions-between {
+    display: flex;
+    justify-content: space-between;
+    margin-top: 20px;
+}
+
+/* --- Progress bar -------------------------------------------------------- */
+.progress-track {
+    height: 8px;
+    background: var(--c-border);
+    border-radius: 4px;
+    overflow: hidden;
+    margin: 14px 0;
+}
+
+.progress-fill {
+    height: 100%;
+    background: linear-gradient(90deg, var(--c-primary), #3b82f6);
+    border-radius: 4px;
+    transition: width 0.3s ease;
+}
+
+.progress-info {
+    color: var(--c-text-3);
+    font-size: 12px;
+    margin-top: 4px;
+}
+
+/* --- Settings form ------------------------------------------------------- */
+.settings-group { margin: 14px 0; }
+
+.settings-label {
+    font-size: 12px;
+    font-weight: 600;
+    color: var(--c-text-2);
+    display: block;
+    margin-bottom: 6px;
+}
+
+.settings-select {
+    width: 100%;
+    padding: 7px 10px;
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    font: inherit;
+    font-size: 13px;
+    background: var(--c-surface);
+    color: var(--c-text);
+    cursor: pointer;
+    outline: none;
+    transition: border-color 0.15s ease;
+}
+
+.settings-select:focus { border-color: var(--c-primary); }
+
+.settings-checkbox-row {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    margin: 14px 0;
+}
+
+.settings-checkbox-row input[type="checkbox"] {
+    width: 16px;
+    height: 16px;
+    accent-color: var(--c-primary);
+    cursor: pointer;
+}
+
+.settings-checkbox-row label {
+    font-size: 13px;
+    color: var(--c-text);
+    cursor: pointer;
+}

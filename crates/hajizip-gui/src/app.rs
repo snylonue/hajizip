@@ -23,7 +23,9 @@ use crate::controller::{
     BreadcrumbSegment, ControllerHandle, Event, Intent, ProgressUpdate, spawn_controller,
 };
 use crate::registry::compose_registry;
-use crate::ui::{Breadcrumb, FileList, PasswordDialog, ProgressDialog, SettingsPanel, TreeView};
+use crate::ui::{
+    Breadcrumb, CSS, FileList, PasswordDialog, ProgressDialog, SettingsPanel, TreeView,
+};
 
 /// The application root component.
 #[component]
@@ -241,11 +243,15 @@ pub fn App() -> Element {
 
     // Drop the archive name from breadcrumb display in the header.
     let has_archive_value = *has_archive.read();
+    let status_text = status.read().clone();
+    let status_has_text = !status_text.is_empty();
 
     rsx! {
+        // Global stylesheet (injected once into the WebView document head).
+        style { {CSS} }
+
         div {
             class: "app",
-            style: "display: flex; flex-direction: column; height: 100vh; font-family: sans-serif;",
             ondragover: move |evt| evt.prevent_default(),
             ondrop: move |evt| {
                 evt.prevent_default();
@@ -257,43 +263,49 @@ pub fn App() -> Element {
                 }
             },
 
-            header {
-                style: "display: flex; align-items: center; gap: 10px; padding: 10px 14px; \
-                        border-bottom: 1px solid #ddd; background: #fff;",
-                h1 { style: "font-size: 16px; margin: 0;", "hajizip" }
-                button { onclick: open_dialog, "Open…" }
-                button {
-                    onclick: extract_all,
-                    disabled: !has_archive_value,
-                    "Extract…"
+            // ── Header ─────────────────────────────────────────────────
+            header { class: "app-header",
+                div { class: "app-logo",
+                    span { class: "app-logo-icon", "📦" }
+                    "hajizip"
                 }
-                button {
-                    onclick: move |_| settings_open.set(true),
-                    "Settings"
+                div { class: "header-actions",
+                    button { class: "btn btn-primary btn-sm", onclick: open_dialog,
+                        "📂 Open"
+                    }
+                    button {
+                        class: "btn btn-sm",
+                        onclick: extract_all,
+                        disabled: !has_archive_value,
+                        "📤 Extract"
+                    }
+                    button {
+                        class: "btn btn-ghost btn-sm",
+                        onclick: move |_| settings_open.set(true),
+                        "⚙️"
+                    }
                 }
+                div { class: "header-spacer" }
                 if has_archive_value {
-                    span { style: "color: #555; margin-left: auto; font-size: 13px;", "{archive_name}" }
+                    span { class: "header-archive-name", "{archive_name}" }
                 }
             }
 
+            // ── Main content ────────────────────────────────────────────
             if has_archive_value {
-                div {
-                    style: "display: flex; align-items: center; padding: 4px 10px; gap: 8px; \
-                            border-bottom: 1px solid #eee;",
-                    button {
-                        onclick: back,
-                        style: "padding: 4px 10px; border: 1px solid #ccc; background: white; \
-                                border-radius: 4px; cursor: pointer;",
-                        "← Up"
+                // Toolbar with navigation
+                div { class: "toolbar",
+                    button { class: "btn btn-sm btn-icon", onclick: back, title: "Go up one level",
+                        "↑"
                     }
                 }
+
                 Breadcrumb {
                     segments: breadcrumb.read().clone(),
                     on_jump: jump,
                 }
-                div {
-                    class: "browser",
-                    style: "display: flex; flex: 1; overflow: hidden;",
+
+                div { class: "browser",
                     TreeView {
                         entries: entries,
                         expanded: expanded,
@@ -307,19 +319,26 @@ pub fn App() -> Element {
                     }
                 }
             } else {
-                div {
-                    style: "flex: 1; display: flex; align-items: center; justify-content: center; \
-                            color: #888;",
-                    "Open an archive to browse it (menu, or drag & drop a file here)."
+                div { class: "empty-state",
+                    div { class: "empty-icon", "📦" }
+                    div { class: "empty-title", "No Archive Open" }
+                    div { class: "empty-hint",
+                        "Click "
+                        strong { "Open" }
+                        " to browse for an archive file,"
+                        br {}
+                        "or drag and drop a file onto this window."
+                    }
                 }
             }
 
+            // ── Status bar ──────────────────────────────────────────────
             footer {
-                style: "padding: 6px 14px; border-top: 1px solid #ddd; color: #555; font-size: 12px;",
-                "{status}"
+                class: if status_has_text { "statusbar statusbar-has-text" } else { "statusbar" },
+                "{status_text}"
             }
 
-            // Modal dialogs.
+            // ── Modal dialogs ───────────────────────────────────────────
             if let Some(prompt) = password_prompt.read().clone() {
                 PasswordDialog {
                     path: prompt.path.display().to_string(),
