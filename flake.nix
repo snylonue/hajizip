@@ -9,6 +9,12 @@
       url = "github:numtide/llm-agents.nix";
       inputs.nixpkgs.follows = "nixpkgs";
     };
+    # Rust toolchain for packaging/CI only (dev shell keeps the system
+    # toolchain). Used by the declarative MSVC Windows package.
+    rust-overlay = {
+      url = "github:oxalica/rust-overlay";
+      inputs.nixpkgs.follows = "nixpkgs";
+    };
   };
 
   outputs =
@@ -33,16 +39,31 @@
             pkgs,
             lib,
             self',
+            system,
             ...
           }:
           {
             # Declarative packages: Linux GUI (native) and Windows GUI
-            # (MinGW cross build). Defined only on Linux hosts (the cross
-            # package set and WebKit stack are Linux-only here); the Windows
-            # package is also what the CI release job builds.
+            # (MinGW cross build, fallback) + Windows GUI via MSVC
+            # (rust-overlay toolchain + cargo-xwin, recommended). Defined only
+            # on Linux hosts (the cross package set and WebKit stack are
+            # Linux-only here); the Windows packages are also what the CI
+            # release job builds.
             packages = lib.optionalAttrs pkgs.stdenv.isLinux {
               gui = pkgs.callPackage ./nix/gui.nix { };
               windows = pkgs.pkgsCross.mingwW64.callPackage ./nix/windows.nix { };
+              # MSVC route: single exe, no WebView2Loader.dll to ship, CET
+              # bit set; CRT/SDK pre-downloaded via a fixed-output derivation
+              # (see local-doc/research-windows-msvc-nix-fod.md).
+              windows-msvc = let
+                pkgs' = import inputs.nixpkgs {
+                  inherit system;
+                  overlays = [ (import inputs.rust-overlay) ];
+                };
+                rust-toolchain = (pkgs'.rust-bin.stable.latest.default.override {
+                  targets = [ "x86_64-pc-windows-msvc" ];
+                });
+              in pkgs'.callPackage ./nix/windows-msvc.nix { inherit rust-toolchain; };
               default = self'.packages.gui;
             };
 

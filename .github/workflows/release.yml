@@ -6,11 +6,15 @@
 #   - manual `workflow_dispatch` -> build + publish a PRE-release
 #
 # Published asset (all triggers):
-#   hajizip-windows-x86_64.zip  (hajizip-gui.exe + WebView2Loader.dll, ready
-#                                to run on Windows 10/11 with the WebView2
-#                                Runtime; built via pkgsCross.mingwW64)
+#   hajizip-windows-x86_64.zip  (hajizip-gui.exe, single file — MSVC build via
+#                                rust-overlay + cargo-xwin with a FOD-pinned
+#                                CRT/SDK cache; WebView2 loader statically
+#                                linked, no DLLs to ship. Needs only the
+#                                WebView2 Runtime, present on Win10/11.)
 #
-# The Linux package is built as a flake health check but NOT published.
+# The MinGW package (packages.x86_64-linux.windows) is built as a fallback
+# health check; the Linux package as a flake health check. Neither is
+# published.
 
 name: build-and-release
 
@@ -40,15 +44,24 @@ jobs:
       - name: Build Linux package
         run: nix build '.#packages.x86_64-linux.gui' -o result-linux
 
-      - name: Build Windows package
-        run: nix build '.#packages.x86_64-linux.windows' -o result-windows
+      # Windows MSVC build (published): single exe, no DLLs. The CRT/SDK
+      # download happens once inside the FOD (fixed-output derivation), then
+      # everything is cached and offline.
+      - name: Build Windows MSVC package
+        run: nix build '.#packages.x86_64-linux.windows-msvc' -o result-windows-msvc
+
+      # Windows MinGW build: fallback health check (needs WebView2Loader.dll,
+      # not published).
+      - name: Build Windows MinGW package (fallback check)
+        run: nix build '.#packages.x86_64-linux.windows' -o result-windows-mingw
 
       - name: Collect Windows artifact
         run: |
           set -euo pipefail
           mkdir -p dist
-          # Windows: exe + WebView2Loader.dll side by side (MinGW build).
-          (cd result-windows/bin && zip -qr "$GITHUB_WORKSPACE/dist/hajizip-windows-x86_64.zip" .)
+          # MSVC build: single exe, no WebView2Loader.dll to ship.
+          cp result-windows-msvc/bin/hajizip-gui.exe dist/
+          (cd dist && zip -q hajizip-windows-x86_64.zip hajizip-gui.exe)
 
       - name: Upload workflow artifacts
         uses: actions/upload-artifact@v4
