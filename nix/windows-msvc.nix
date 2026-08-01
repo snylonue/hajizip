@@ -115,6 +115,24 @@ stdenv.mkDerivation {
     export XWIN_CACHE_DIR="$TMPDIR/xwin-cache"
     mkdir -p "$XWIN_CACHE_DIR"
     cp -r "$windowsSdk/." "$XWIN_CACHE_DIR/"
+
+    # Reproducible builds: rustc embeds file!()-derived paths (dependency
+    # sources copied into $TMPDIR by cargoSetupHook, OUT_DIR under
+    # $TMPDIR/source/target, ...) into panic strings, and $TMPDIR differs
+    # per build. Remap the per-build sandbox prefix to fixed strings so two
+    # builds of the same drv produce byte-identical exes. cargo-xwin reads
+    # rustflags from the project .cargo/config.toml and merges them into
+    # CARGO_TARGET_<triple>_RUSTFLAGS (it ignores the RUSTFLAGS env).
+    mkdir -p .cargo
+    cat > .cargo/config.toml <<EOF
+    [target.x86_64-pc-windows-msvc]
+    rustflags = [
+      "--remap-path-prefix=$TMPDIR/source=hajizip",
+      "--remap-path-prefix=$TMPDIR/cargo-vendor-dir=hajizip-deps",
+      "--remap-path-prefix=$TMPDIR/xwin-cache=xwin",
+      "-C", "link-arg=/DEBUG:NONE",
+    ]
+    EOF
   '';
 
   buildPhase = ''
