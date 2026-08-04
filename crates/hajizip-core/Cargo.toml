@@ -17,6 +17,9 @@ tar = "0.4"
 # Filename decoding for legacy codepages (GBK / Shift-JIS / Big5; see
 # local-doc/research-encoding.md). CP437 is deferred per maintainer.
 encoding_rs = "0.8"
+# Legacy-encoding auto-detection for the `Auto` filename strategy (same author
+# as encoding_rs, Firefox-grade; see local-doc/research-encoding.md).
+chardetng = "0.1.17"
 # Date/time (replaces hand-rolled civil-date math; already a transitive dep of
 # zip, see local-doc/research-time-filetime.md).
 time = "0.3"

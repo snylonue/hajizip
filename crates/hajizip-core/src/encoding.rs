@@ -28,8 +28,11 @@ pub enum Codepage {
 /// Filename decoding strategy.
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Default)]
 pub enum FilenameEncoding {
-    /// Prefer the format's UTF-8 flag or valid UTF-8, else fall back to a
-    /// configured codepage.
+    /// Prefer the format's UTF-8 flag or valid UTF-8, else fall back to the
+    /// default legacy codepage (GBK). The zip reader additionally performs
+    /// an archive-level codepage detection before decoding (see
+    /// `ZipArchive::new`): other formats (tar...) have no declared encoding
+    /// or a UTF-8-native one, so no detection is attempted for them.
     #[default]
     Auto,
     /// Force a specific codepage regardless of flags.
@@ -43,11 +46,14 @@ pub struct Utf8Flag(pub bool);
 /// Decode raw entry-name bytes into a UTF-8 `String`.
 ///
 /// Strategy (architecture.md §4.10): `Auto` prefers the format's UTF-8 flag
-/// or valid UTF-8, then falls back to the default legacy codepage (GBK — the
-/// frozen `Auto` variant carries no codepage field; the GUI can force a
-/// codepage via `Forced`). `Forced` decodes with the given codepage;
-/// `Forced(Utf8)` rejects invalid UTF-8 with [`Error::CorruptArchive`].
-/// `Cp437` is deferred and returns [`Error::UnsupportedFeature`].
+/// or valid UTF-8, then falls back to the default legacy codepage (GBK).
+/// Legacy-codepage *detection* is deliberately not part of this function: it
+/// is an archive-level concern (the zip reader aggregates raw names and
+/// detects once, feeding the result back via `Forced`; tar's USTAR names have
+/// no declared encoding, so guessing per name is unreliable). `Forced` decodes
+/// with the given codepage; `Forced(Utf8)` rejects invalid UTF-8 with
+/// [`Error::CorruptArchive`]. `Cp437` is deferred and returns
+/// [`Error::UnsupportedFeature`].
 pub fn decode_filename(raw: &[u8], enc: FilenameEncoding, hint: Utf8Flag) -> Result<String> {
     match enc {
         FilenameEncoding::Auto if hint.0 => utf8(raw),
@@ -58,6 +64,29 @@ pub fn decode_filename(raw: &[u8], enc: FilenameEncoding, hint: Utf8Flag) -> Res
         },
         FilenameEncoding::Forced(Codepage::Utf8) => utf8(raw),
         FilenameEncoding::Forced(cp) => decode_codepage(raw, cp),
+    }
+}
+
+/// Detect the legacy codepage of `bytes` (the concatenation of an archive's
+/// non-UTF-8 raw names) using `chardetng` — the same detector Firefox ships
+/// for legacy Web content, by the author of `encoding_rs`.
+///
+/// Used by the zip reader's archive-level pre-pass: a single short name is
+/// usually too little signal for reliable detection, so every legacy name is
+/// aggregated before calling. Only guesses that map onto a supported codepage
+/// are trusted; anything else (windows-125x, EUC-KR, ...) yields `None` so
+/// callers fall back to the default codepage (GBK).
+pub(crate) fn detect_codepage(bytes: &[u8]) -> Option<Codepage> {
+    if bytes.is_empty() {
+        return None;
+    }
+    let mut detector = chardetng::EncodingDetector::new();
+    detector.feed(bytes, true);
+    match detector.guess(None, true).name() {
+        "GBK" => Some(Codepage::Gbk),
+        "Shift_JIS" => Some(Codepage::ShiftJis),
+        "Big5" => Some(Codepage::Big5),
+        _ => None,
     }
 }
 
@@ -196,5 +225,44 @@ mod tests {
         )
         .unwrap();
         assert!(s.contains('\u{fffd}'));
+    }
+
+    #[test]
+    fn detect_codepage_recognizes_supported_legacy_encodings() {
+        let sjis = [
+            0x83u8, 0x45, 0x83, 0x89, 0x83, 0x8c, 0x83, 0x5e, 0x83, 0x45, 0x83, 0x93,
+        ];
+        assert_eq!(detect_codepage(&sjis), Some(Codepage::ShiftJis));
+        let gbk = [
+            0xb2u8, 0xe2, 0xca, 0xd4, 0xce, 0xc4, 0xb5, 0xb5, 0xcb, 0xb5, 0xc3, 0xf7,
+        ];
+        assert_eq!(detect_codepage(&gbk), Some(Codepage::Gbk));
+        let big5 = [0xbb, 0xa1, 0xa9, 0xfa, 0xae, 0xd1, 0x2e, 0x74, 0x78, 0x74]; // 說明書.txt
+        assert_eq!(detect_codepage(&big5), Some(Codepage::Big5));
+    }
+
+    #[test]
+    fn detect_codepage_rejects_unsupported_guesses() {
+        // Too short to classify: chardetng guesses EUC-KR / windows-125x,
+        // which map onto no supported codepage -> None (caller falls back).
+        assert_eq!(detect_codepage(&[0xc4u8, 0xe3, 0xba, 0xc3]), None);
+        assert_eq!(detect_codepage(b""), None);
+        // Pure ASCII/UTF-8 input is not a legacy codepage detection target.
+        assert_eq!(detect_codepage(b"hello"), None);
+    }
+
+    #[test]
+    fn detect_codepage_aggregate_short_shift_jis_names() {
+        // Each name alone is too short to classify, but the aggregate of the
+        // archive's legacy names is enough signal (this is what the zip
+        // archive's pre-pass feeds).
+        let mut corpus = Vec::new();
+        corpus.extend_from_slice(&[0x90, 0xe0, 0x96, 0xbe, 0x2e, 0x74, 0x78, 0x74]); // 説明.txt
+        corpus.extend_from_slice(&[0x96, 0x7b, 0x2e, 0x74, 0x78, 0x74]); // 本.txt
+        corpus.extend_from_slice(&[
+            0x83, 0x45, 0x83, 0x89, 0x83, 0x8c, 0x83, 0x5e, 0x83, 0x45, 0x83, 0x93, 0x2e, 0x65,
+            0x78, 0x65,
+        ]); // ウラレタウン.exe
+        assert_eq!(detect_codepage(&corpus), Some(Codepage::ShiftJis));
     }
 }

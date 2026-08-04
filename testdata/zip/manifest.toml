@@ -16,6 +16,10 @@ note = "UTF-8 names with EFS flag set"
 name = ["\u{fffd}\u{fffd}\u{fffd}\u{fffd}"]
 note = "name bytes are GBK C4 E3 BA C3 (你好), EFS unset; lossy-decoded"
 
+[sjis.zip]
+name = ["\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}.exe", "\u{fffd}\u{fffd}\u{fffd}\u{fffd}.txt", "\u{fffd}\u{fffd}.txt"]
+note = "name bytes are Shift-JIS (ウラレタウン.exe / 説明.txt / 本.txt), EFS unset; Auto strategy detects Shift-JIS from the aggregate"
+
 [zipslip.zip]
 name = ["outer/../evil.txt", "ok.txt"]
 note = "entry with `..` component must be skipped at listing"

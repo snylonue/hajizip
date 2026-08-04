@@ -84,6 +84,19 @@ cp "$OUT/level1.zip" "$TMP/deep/level1.zip"
 touch_epoch "$TMP/deep"
 (cd "$TMP/deep" && zip -X -q "$OUT/deep.zip" level1.zip)
 
+# --- sjis.zip: Shift-JIS names, EFS NOT set -------------------------------
+# Raw SJIS bytes are written directly into filenames (bash $'\x..' quoting) and
+# `LANG=C zip` stores them verbatim without the UTF-8 flag. Names:
+#   ウラレタウン.exe (16B), 説明.txt (8B), 本.txt (6B) — the shorter two are
+# too short for chardetng individually; the aggregate is what the Auto
+# strategy detects with (see crates/hajizip-core/src/encoding.rs).
+mkdir -p "$TMP/build6"
+printf 'content-a\n' > "$TMP/build6/$(printf '\x83\x45\x83\x89\x83\x8c\x83\x5e\x83\x45\x83\x93.exe')"
+printf 'content-b\n' > "$TMP/build6/$(printf '\x90\xe0\x96\xbe.txt')"
+printf 'content-c\n' > "$TMP/build6/$(printf '\x96\x7b.txt')"
+touch_epoch "$TMP/build6"
+(cd "$TMP/build6" && LANG=C zip -X -0 -q "$OUT/sjis.zip" *)
+
 # --- corrupt.zip: truncated in the middle of the central directory ----------
 head -c 64 basic.zip > corrupt.zip
 
@@ -115,6 +128,10 @@ note = "UTF-8 names with EFS flag set"
 [gbk.zip]
 name = ["\u{fffd}\u{fffd}\u{fffd}\u{fffd}"]
 note = "name bytes are GBK C4 E3 BA C3 (你好), EFS unset; lossy-decoded"
+
+[sjis.zip]
+name = ["\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}\u{fffd}.exe", "\u{fffd}\u{fffd}\u{fffd}\u{fffd}.txt", "\u{fffd}\u{fffd}.txt"]
+note = "name bytes are Shift-JIS (ウラレタウン.exe / 説明.txt / 本.txt), EFS unset; Auto strategy detects Shift-JIS from the aggregate"
 
 [zipslip.zip]
 name = ["outer/../evil.txt", "ok.txt"]

@@ -14,6 +14,7 @@ use crate::archive::{
     Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, decode_name,
     node_from_meta, open_nested_bytes, root_meta,
 };
+use crate::encoding::{Codepage, FilenameEncoding, detect_codepage};
 use crate::error::{Error, Result};
 use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath};
@@ -81,12 +82,41 @@ impl ZipArchive {
         // Maps each central-directory index to its (filtered) entry index.
         let mut cd_to_entry: Vec<Option<usize>> = Vec::with_capacity(archive.len());
 
+        // Pre-pass under the `Auto` strategy: detect the archive-wide legacy
+        // codepage from the concatenation of all non-UTF-8 raw names. A single
+        // short name is usually too little signal for reliable detection (e.g.
+        // a 2-char Japanese name); aggregating every legacy name gives the
+        // detector a proper corpus. Valid UTF-8 names are excluded — they
+        // decode through the UTF-8 path and must not bias the guess.
+        let detected_codepage: Option<Codepage> = if opts.encoding == FilenameEncoding::Auto {
+            let mut corpus = Vec::new();
+            for i in 0..archive.len() {
+                let file = archive.by_index_raw(i).map_err(map_zip_err)?;
+                let raw = file.name_raw();
+                if !raw.is_ascii() && std::str::from_utf8(raw).is_err() {
+                    corpus.extend_from_slice(raw);
+                }
+            }
+            detect_codepage(&corpus)
+        } else {
+            None
+        };
+
         for i in 0..archive.len() {
             // `by_index_raw` avoids the password check so encrypted archives
             // can still be listed (reads are rejected later, see `with_file`).
             let file = archive.by_index_raw(i).map_err(map_zip_err)?;
             let raw_name = file.name_raw().to_vec();
-            let decoded = decode_name(&raw_name, opts.encoding);
+            let decoded = match detected_codepage {
+                // A detected codepage applies only to legacy (non-UTF-8)
+                // names; valid UTF-8 names still win in `Auto` mode, so
+                // mixed archives (UTF-8 + legacy) keep both correct.
+                Some(cp) => match std::str::from_utf8(&raw_name) {
+                    Ok(s) => s.to_owned(),
+                    Err(_) => decode_name(&raw_name, FilenameEncoding::Forced(cp)),
+                },
+                None => decode_name(&raw_name, opts.encoding),
+            };
             // Entries whose paths fail validation (e.g. `../evil.txt`) cannot
             // be extracted safely; they are skipped from the listing (first
             // line of zip-slip defense, architecture.md §4.8).

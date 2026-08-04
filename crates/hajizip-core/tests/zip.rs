@@ -137,6 +137,52 @@ fn gbk_name_decodes_via_auto_fallback_and_keeps_raw() {
 }
 
 #[test]
+fn shift_jis_names_auto_detect_from_aggregate() {
+    // sjis.zip stores Shift-JIS bytes (EFS unset): ウラレタウン.exe,
+    // 説明.txt, 本.txt. The shorter names are too short to detect
+    // individually, so the per-archive aggregate pre-pass must kick in.
+    let archive = open("sjis.zip").expect("opens");
+    let mut paths = entry_paths(&*archive);
+    paths.sort();
+    assert_eq!(
+        paths,
+        ["ウラレタウン.exe", "本.txt", "説明.txt"],
+        "got {paths:?}"
+    );
+    // Raw bytes are preserved for round-tripping.
+    let entries = archive.entries().expect("listing works");
+    let e = entries
+        .iter()
+        .find(|e| e.path.as_str() == "説明.txt")
+        .expect("entry present");
+    assert_eq!(e.raw_name, [0x90, 0xe0, 0x96, 0xbe, 0x2e, 0x74, 0x78, 0x74]);
+    // Content is still readable through the decoded path.
+    assert_eq!(
+        read_entry(&*archive, "説明.txt").expect("reads"),
+        b"content-b\n"
+    );
+}
+
+#[test]
+fn shift_jis_names_forced_gbk_keeps_old_behavior() {
+    // Forcing GBK must bypass detection: the same bytes decode as GBK
+    // garbage (the pre-fix default), proving the Auto fix is what decodes
+    // them correctly.
+    let reg = Registry::new().register_archive(ZipFormat);
+    let archive = reg
+        .open_archive(
+            Source::Path(fixture("sjis.zip")),
+            &OpenOptions {
+                encoding: hajizip_core::FilenameEncoding::Forced(hajizip_core::Codepage::Gbk),
+                ..Default::default()
+            },
+        )
+        .expect("opens");
+    let paths = entry_paths(&*archive);
+    assert!(paths.iter().any(|p| p.contains("僂")), "got {paths:?}");
+}
+
+#[test]
 fn zipslip_entry_is_skipped_at_listing() {
     let archive = open("zipslip.zip").expect("opens");
     let paths = entry_paths(&*archive);
