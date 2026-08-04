@@ -56,6 +56,12 @@ pub enum Intent {
         /// Destination directory.
         dest_dir: PathBuf,
     },
+    /// Extract a single file entry to a temporary location so the UI can open
+    /// it with the system default application (preview).
+    Preview {
+        /// Path of the file entry to preview.
+        path: EntryPath,
+    },
     /// Cancel the in-flight operation (extraction).
     ///
     /// The UI uses [`ControllerHandle::cancel`] directly (no worker round
@@ -126,6 +132,12 @@ pub enum Event {
     },
     /// Progress of an in-flight extraction.
     Progress(ProgressUpdate),
+    /// A single file entry was extracted to `temp_path` for previewing; the
+    /// UI should open it with the system default application.
+    PreviewReady {
+        /// Path of the extracted temporary file.
+        temp_path: PathBuf,
+    },
     /// An extraction run completed.
     Done(ExtractReport),
     /// The in-flight operation was cancelled.
@@ -166,6 +178,9 @@ pub struct ControllerCore {
     cancel: CancelSlot,
     /// Last successfully opened source, to re-open on encoding changes.
     last_open: Option<(PathBuf, Option<String>)>,
+    /// Directory holding the most recent preview extraction (cleaned up
+    /// before the next preview or when a new archive is opened).
+    preview_dir: Option<PathBuf>,
 }
 
 impl ControllerCore {
@@ -186,6 +201,7 @@ impl ControllerCore {
             stack: Vec::new(),
             cancel,
             last_open: None,
+            preview_dir: None,
         }
     }
 
@@ -210,6 +226,7 @@ impl ControllerCore {
                 selection,
                 dest_dir,
             } => self.extract(selection, dest_dir, emit),
+            Intent::Preview { path } => self.preview(path, emit),
             Intent::Cancel => {
                 if let Some(token) = self.cancel.lock().unwrap().as_ref() {
                     token.cancel();
@@ -234,6 +251,11 @@ impl ControllerCore {
 
     /// Open a top-level archive and list its entries.
     fn open(&mut self, path: &Path, password: Option<&str>, emit: &mut (dyn FnMut(Event) + Send)) {
+        // A previous preview lives in the system temp dir; drop it when the
+        // user opens a different archive (best effort).
+        if let Some(dir) = self.preview_dir.take() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
         let opts = OpenOptions {
             password: password.map(Secret::new),
             encoding: self.config.filename_encoding,
@@ -452,6 +474,56 @@ impl ControllerCore {
             focus: top.focus.clone(),
             entries: top.entries.as_ref().clone(),
         });
+    }
+
+    /// Extract a single file entry to a temporary location for previewing.
+    ///
+    /// The temp file lives in the system temp dir under a per-process
+    /// directory; the previous preview directory is removed first (best
+    /// effort — the OS may still hold the file open). The resulting path is
+    /// reported via [`Event::PreviewReady`] so the UI can hand it to the
+    /// platform's default application.
+    fn preview(&mut self, path: &EntryPath, emit: &mut (dyn FnMut(Event) + Send)) {
+        let Some(top) = self.stack.last().cloned() else {
+            emit(Event::Error("no archive open".into()));
+            return;
+        };
+        let Some(entry) = top.entries.iter().find(|e| e.path == *path).cloned() else {
+            emit(Event::Error(format!("entry not found: {path}")));
+            return;
+        };
+        if entry.kind != NodeKind::File {
+            emit(Event::Error(format!(
+                "cannot preview '{}' (not a file)",
+                path.as_str()
+            )));
+            return;
+        }
+
+        // Drop the previous preview dir (best effort; the OS may still hold
+        // the file open until the external app is done with it).
+        if let Some(dir) = self.preview_dir.take() {
+            let _ = std::fs::remove_dir_all(&dir);
+        }
+        let dir = std::env::temp_dir().join(format!("hajizip-preview-{}", std::process::id()));
+        let base = path.as_str().rsplit('/').next().unwrap_or("preview");
+        let dest = dir.join(base);
+
+        let result = (|| -> Result<(), CoreError> {
+            std::fs::create_dir_all(&dir)?;
+            let mut reader = top.archive.reader(&entry)?;
+            let mut file = std::fs::File::create(&dest)?;
+            std::io::copy(&mut reader, &mut file)?;
+            Ok(())
+        })();
+
+        match result {
+            Ok(()) => {
+                self.preview_dir = Some(dir);
+                emit(Event::PreviewReady { temp_path: dest });
+            }
+            Err(e) => emit(Event::Error(e.to_string())),
+        }
     }
 
     /// Run an extraction by delegating to core's [`ExtractEngine`], bridging
@@ -818,6 +890,89 @@ mod tests {
             }
             other => panic!("expected Opened, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn preview_extracts_file_to_temp_and_emits_ready() {
+        let mut f = meta("photo.png");
+        f.uncompressed_size = Some(5);
+        let registry = Registry::new().register_archive(OkFormat { entries: vec![f] });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("preview.fake"),
+                password: None,
+            },
+        );
+
+        let events = run(
+            &mut core,
+            &Intent::Preview {
+                path: EntryPath::new("photo.png").unwrap(),
+            },
+        );
+        match &events[..] {
+            [Event::PreviewReady { temp_path }] => {
+                // The fake archive's reader yields `x` bytes.
+                assert_eq!(std::fs::read(temp_path).unwrap(), vec![b'x'; 5]);
+                let _ = std::fs::remove_dir_all(temp_path.parent().unwrap());
+            }
+            other => panic!("expected PreviewReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn preview_non_file_entry_errors() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("dir/b.txt")],
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("preview-dir.fake"),
+                password: None,
+            },
+        );
+
+        // "dir" is an implied directory, not a file entry.
+        let events = run(
+            &mut core,
+            &Intent::Preview {
+                path: EntryPath::new("dir").unwrap(),
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::Error(_)]),
+            "expected Error, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn preview_unknown_entry_errors() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt")],
+        });
+        let mut core = core_with(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("preview-missing.fake"),
+                password: None,
+            },
+        );
+
+        let events = run(
+            &mut core,
+            &Intent::Preview {
+                path: EntryPath::new("nope.txt").unwrap(),
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::Error(_)]),
+            "expected Error, got {events:?}"
+        );
     }
 
     #[test]

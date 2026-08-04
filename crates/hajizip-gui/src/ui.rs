@@ -5,7 +5,7 @@
 use std::collections::HashSet;
 
 use dioxus::prelude::*;
-use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, OverwritePolicy};
+use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, NodeKind, OverwritePolicy};
 
 use crate::config::AppConfig;
 use crate::controller::{BreadcrumbSegment, ProgressUpdate};
@@ -219,6 +219,8 @@ struct FileRowView {
     size: String,
     kind: String,
     time: String,
+    /// Whether this row is a plain file (double-click previews it).
+    is_file: bool,
 }
 
 /// Right file list: children of the current focus directory.
@@ -230,8 +232,10 @@ pub fn FileList(
     focus: Signal<Option<EntryPath>>,
     /// Currently selected paths (multi-select).
     selected: Signal<HashSet<EntryPath>>,
-    /// Called when an entry is double-clicked.
+    /// Called when a dir/archive entry is double-clicked (navigate).
     on_open: EventHandler<EntryPath>,
+    /// Called when a plain file entry is double-clicked (preview).
+    on_preview: EventHandler<EntryPath>,
 ) -> Element {
     let flat = entries.read().clone();
     let f = focus.read().clone();
@@ -250,6 +254,7 @@ pub fn FileList(
                 kind: viewmodel::kind_label(entry.kind).to_string(),
                 time: viewmodel::time_label(entry.mtime),
                 path,
+                is_file: entry.kind == NodeKind::File,
             }
         })
         .collect();
@@ -268,7 +273,7 @@ pub fn FileList(
                 }
                 tbody {
                     for (i, row) in views.iter().enumerate() {
-                        { render_file_row(row, i, selected, on_open) }
+                        { render_file_row(row, i, selected, on_open, on_preview) }
                     }
                 }
             }
@@ -282,6 +287,7 @@ fn render_file_row(
     i: usize,
     mut selected: Signal<HashSet<EntryPath>>,
     on_open: EventHandler<EntryPath>,
+    on_preview: EventHandler<EntryPath>,
 ) -> Element {
     let path = row.path.clone();
     let name = row.name.clone();
@@ -291,6 +297,8 @@ fn render_file_row(
     let time = row.time.clone();
     let toggle_path = path.clone();
     let open_path = path.clone();
+    let preview_path = path.clone();
+    let is_file = row.is_file;
     let row_class = if row.selected {
         "file-row file-row-selected"
     } else {
@@ -306,7 +314,13 @@ fn render_file_row(
                     set.insert(toggle_path.clone());
                 }
             },
-            ondoubleclick: move |_| on_open.call(open_path.clone()),
+            ondoubleclick: move |_| {
+                if is_file {
+                    on_preview.call(preview_path.clone());
+                } else {
+                    on_open.call(open_path.clone());
+                }
+            },
             td { class: "col-lock", "{lock}" }
             td { class: "col-name", "{name}" }
             td { class: "col-size", "{size}" }

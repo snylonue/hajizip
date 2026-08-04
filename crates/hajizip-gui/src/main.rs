@@ -9,6 +9,7 @@
 mod app;
 mod config;
 mod controller;
+mod platform;
 mod registry;
 mod ui;
 mod viewmodel;

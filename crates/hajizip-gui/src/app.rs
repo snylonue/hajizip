@@ -92,6 +92,19 @@ pub fn App() -> Element {
                     Event::Progress(update) => {
                         progress.set(Some(update));
                     }
+                    Event::PreviewReady { temp_path } => {
+                        // Open the extracted temp file with the system default
+                        // app (fire-and-forget; the platform helper never
+                        // blocks the UI thread).
+                        match crate::platform::open_with_default_app(&temp_path) {
+                            Ok(()) => {
+                                status.set(format!("Opened preview: {}", temp_path.display()))
+                            }
+                            Err(e) => {
+                                status.set(format!("Error opening preview: {e:#}"));
+                            }
+                        }
+                    }
                     Event::Done(report) => {
                         progress.set(None);
                         status.set(format!(
@@ -190,6 +203,15 @@ pub fn App() -> Element {
         let handle = handle.clone();
         move |path: EntryPath| {
             let _ = handle.commands.send(Intent::Enter { path });
+        }
+    };
+
+    // Preview a file entry: extract it to temp and open it externally. The
+    // FileList dispatches: dirs/archives → Enter, plain files → Preview.
+    let preview = {
+        let handle = handle.clone();
+        move |path: EntryPath| {
+            let _ = handle.commands.send(Intent::Preview { path });
         }
     };
 
@@ -328,6 +350,7 @@ pub fn App() -> Element {
                         focus: focus,
                         selected: selection,
                         on_open: enter_list,
+                        on_preview: preview,
                     }
                 }
             } else {
