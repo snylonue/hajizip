@@ -15,6 +15,9 @@ use std::path::{Path, PathBuf};
 use hajizip_core::{Codepage, FilenameEncoding, OverwritePolicy, SafetyLimits};
 use serde::{Deserialize, Serialize};
 
+/// Maximum number of recently opened archives remembered.
+pub const MAX_RECENT_FILES: usize = 10;
+
 /// User-facing application settings.
 #[derive(Debug, Clone)]
 pub struct AppConfig {
@@ -31,6 +34,8 @@ pub struct AppConfig {
     pub nested_buffer_threshold: u64,
     /// Filename decoding strategy for non-UTF-8 entry names.
     pub filename_encoding: FilenameEncoding,
+    /// Recently opened archive paths, most recent first.
+    pub recent_files: Vec<PathBuf>,
 }
 
 impl Default for AppConfig {
@@ -43,7 +48,20 @@ impl Default for AppConfig {
             // 64 MiB is a reasonable default split between memory and disk.
             nested_buffer_threshold: 64 * 1024 * 1024,
             filename_encoding: FilenameEncoding::default(),
+            recent_files: Vec::new(),
         }
+    }
+}
+
+impl AppConfig {
+    /// Record a successfully opened archive in the recent-files list.
+    ///
+    /// The path is moved to the front (most recent first), duplicates are
+    /// removed, and the list is capped at [`MAX_RECENT_FILES`].
+    pub fn record_recent(&mut self, path: PathBuf) {
+        self.recent_files.retain(|p| p != &path);
+        self.recent_files.insert(0, path);
+        self.recent_files.truncate(MAX_RECENT_FILES);
     }
 }
 
@@ -100,6 +118,7 @@ struct PersistedConfig {
     max_depth: usize,
     nested_buffer_threshold: u64,
     filename_encoding: String,
+    recent_files: Vec<String>,
 }
 
 impl From<&AppConfig> for PersistedConfig {
@@ -116,6 +135,11 @@ impl From<&AppConfig> for PersistedConfig {
             max_depth: cfg.safety_limits.max_depth,
             nested_buffer_threshold: cfg.nested_buffer_threshold,
             filename_encoding: encoding_to_str(cfg.filename_encoding).to_string(),
+            recent_files: cfg
+                .recent_files
+                .iter()
+                .map(|p| p.display().to_string())
+                .collect(),
         }
     }
 }
@@ -139,6 +163,12 @@ impl From<PersistedConfig> for AppConfig {
             nested_buffer_threshold: p.nested_buffer_threshold,
             filename_encoding: str_to_encoding(&p.filename_encoding)
                 .unwrap_or(defaults.filename_encoding),
+            recent_files: p
+                .recent_files
+                .into_iter()
+                .filter(|s| !s.is_empty())
+                .map(PathBuf::from)
+                .collect(),
         }
     }
 }
@@ -199,6 +229,34 @@ mod tests {
         assert_eq!(config.filename_encoding, FilenameEncoding::Auto);
         assert!(config.nested_buffer_threshold > 0);
         assert!(config.default_extract_dir.is_none());
+        assert!(config.recent_files.is_empty());
+    }
+
+    #[test]
+    fn record_recent_moves_to_front_dedupes_and_caps() {
+        let mut config = AppConfig::default();
+        for i in 0..MAX_RECENT_FILES + 3 {
+            config.record_recent(PathBuf::from(format!("/tmp/a{i}.zip")));
+        }
+        // Capped at MAX_RECENT_FILES, most recent first.
+        assert_eq!(config.recent_files.len(), MAX_RECENT_FILES);
+        assert_eq!(
+            config.recent_files[0],
+            PathBuf::from(format!("/tmp/a{}.zip", MAX_RECENT_FILES + 2))
+        );
+
+        // Re-recording an existing path moves it to the front, no duplicate.
+        config.record_recent(PathBuf::from("/tmp/a0.zip"));
+        assert_eq!(config.recent_files.len(), MAX_RECENT_FILES);
+        assert_eq!(config.recent_files[0], PathBuf::from("/tmp/a0.zip"));
+        assert_eq!(
+            config
+                .recent_files
+                .iter()
+                .filter(|p| p.as_path() == Path::new("/tmp/a0.zip"))
+                .count(),
+            1
+        );
     }
 
     #[test]
@@ -214,6 +272,10 @@ mod tests {
             },
             nested_buffer_threshold: 999,
             filename_encoding: FilenameEncoding::Forced(Codepage::Gbk),
+            recent_files: vec![
+                PathBuf::from("/tmp/one.zip"),
+                PathBuf::from("/tmp/two.tar.gz"),
+            ],
         };
 
         let persisted = PersistedConfig::from(&config);
@@ -239,6 +301,7 @@ mod tests {
             config.nested_buffer_threshold
         );
         assert_eq!(restored.filename_encoding, config.filename_encoding);
+        assert_eq!(restored.recent_files, config.recent_files);
     }
 
     #[test]
@@ -252,10 +315,13 @@ mod tests {
             max_depth: 1,
             nested_buffer_threshold: 1,
             filename_encoding: "bogus".into(),
+            recent_files: vec!["/tmp/x.zip".into(), "".into()],
         };
         let restored = AppConfig::from(persisted);
         assert_eq!(restored.overwrite_policy, OverwritePolicy::Ask);
         assert_eq!(restored.filename_encoding, FilenameEncoding::Auto);
+        // Empty strings are dropped; valid paths survive.
+        assert_eq!(restored.recent_files, vec![PathBuf::from("/tmp/x.zip")]);
     }
 
     #[test]
@@ -267,6 +333,7 @@ mod tests {
             safety_limits: SafetyLimits::default(),
             nested_buffer_threshold: 64 * 1024 * 1024,
             filename_encoding: FilenameEncoding::Forced(Codepage::ShiftJis),
+            recent_files: vec![PathBuf::from("/tmp/recent.7z")],
         };
 
         let dir = std::env::temp_dir().join(format!("hajizip-gui-config-{}", std::process::id()));
@@ -279,6 +346,7 @@ mod tests {
             loaded.filename_encoding,
             FilenameEncoding::Forced(Codepage::ShiftJis)
         );
+        assert_eq!(loaded.recent_files, config.recent_files);
 
         let _ = std::fs::remove_dir_all(&dir);
     }

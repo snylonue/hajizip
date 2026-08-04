@@ -364,6 +364,23 @@ pub fn App() -> Element {
                         br {}
                         "or drag and drop a file onto this window."
                     }
+                    if !config.read().recent_files.is_empty() {
+                        div { class: "recent-files",
+                            div { class: "recent-title", "Recent files" }
+                            for path in config.read().recent_files.clone() {
+                                {
+                                    let open_recent = open_path.clone();
+                                    rsx! {
+                                        button {
+                                            class: "btn btn-sm recent-file",
+                                            onclick: move |_| open_recent(path.clone()),
+                                            "{path.display()}"
+                                        }
+                                    }
+                                }
+                            }
+                        }
+                    }
                 }
             }
 

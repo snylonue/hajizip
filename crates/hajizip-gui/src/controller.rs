@@ -298,6 +298,10 @@ impl ControllerCore {
                     entries: Arc::new(entries.clone()),
                 }];
                 self.last_open = Some((path.to_path_buf(), password.map(str::to_owned)));
+                // Remember the archive for the recent-files list (pure config
+                // bookkeeping; the UI persists it via `ConfigChanged`).
+                self.config.record_recent(path.to_path_buf());
+                emit(Event::ConfigChanged(self.config.clone()));
                 emit(Event::Opened { name, entries });
             }
             Err(e) => emit(Event::Error(e.to_string())),
@@ -884,12 +888,53 @@ mod tests {
         );
 
         match &events[..] {
-            [Event::Opened { name, entries }] => {
+            [Event::ConfigChanged(_), Event::Opened { name, entries }] => {
                 assert_eq!(name, &path.file_name().unwrap().to_string_lossy());
                 assert_eq!(entries.len(), 2);
             }
-            other => panic!("expected Opened, got {other:?}"),
+            other => panic!("expected ConfigChanged + Opened, got {other:?}"),
         }
+    }
+
+    #[test]
+    fn open_records_recent_file_in_config() {
+        let registry = Registry::new().register_archive(OkFormat {
+            entries: vec![meta("a.txt")],
+        });
+        let mut core = core_with(registry);
+
+        let first = temp_archive("recent1.fake");
+        let second = temp_archive("recent2.fake");
+        run(
+            &mut core,
+            &Intent::Open {
+                path: first.clone(),
+                password: None,
+            },
+        );
+        run(
+            &mut core,
+            &Intent::Open {
+                path: second.clone(),
+                password: None,
+            },
+        );
+
+        // Most recent first; duplicates are not recorded twice.
+        assert_eq!(
+            core.config().recent_files,
+            vec![second.clone(), first.clone()]
+        );
+
+        // Re-opening the same path moves it back to the front.
+        run(
+            &mut core,
+            &Intent::Open {
+                path: first.clone(),
+                password: None,
+            },
+        );
+        assert_eq!(core.config().recent_files, vec![first, second]);
     }
 
     #[test]
@@ -1455,8 +1500,15 @@ mod tests {
             Some(FilenameEncoding::Forced(hajizip_core::Codepage::Utf8))
         );
         assert!(
-            matches!(&events[..], [Event::ConfigChanged(_), Event::Opened { .. }]),
-            "expected ConfigChanged + Opened, got {events:?}"
+            matches!(
+                &events[..],
+                [
+                    Event::ConfigChanged(_),
+                    Event::ConfigChanged(_),
+                    Event::Opened { .. }
+                ]
+            ),
+            "expected ConfigChanged + ConfigChanged + Opened, got {events:?}"
         );
     }
 
@@ -1506,8 +1558,8 @@ mod tests {
             },
         );
         let entries = match &events[..] {
-            [Event::Opened { entries, .. }] => entries.clone(),
-            other => panic!("expected Opened, got {other:?}"),
+            [Event::ConfigChanged(_), Event::Opened { entries, .. }] => entries.clone(),
+            other => panic!("expected ConfigChanged + Opened, got {other:?}"),
         };
         assert_eq!(entries.len(), 3, "a.txt + dir/ + dir/b.txt");
 
@@ -1566,10 +1618,10 @@ mod tests {
                 },
             );
             match &events[..] {
-                [Event::Opened { entries, .. }] => {
+                [Event::ConfigChanged(_), Event::Opened { entries, .. }] => {
                     assert_eq!(entries.len(), 3, "{rel} should list a.txt/dir/dir-b.txt")
                 }
-                other => panic!("expected Opened for {rel}, got {other:?}"),
+                other => panic!("expected ConfigChanged + Opened for {rel}, got {other:?}"),
             }
         }
     }
@@ -1601,8 +1653,8 @@ mod tests {
             },
         );
         let entries = match &events[..] {
-            [Event::Opened { entries, .. }] => entries.clone(),
-            other => panic!("expected Opened, got {other:?}"),
+            [Event::ConfigChanged(_), Event::Opened { entries, .. }] => entries.clone(),
+            other => panic!("expected ConfigChanged + Opened, got {other:?}"),
         };
         assert_eq!(entries.len(), 1);
         assert!(entries[0].encrypted);
@@ -1640,8 +1692,8 @@ mod tests {
             },
         );
         let entries = match &events[..] {
-            [Event::Opened { entries, .. }] => entries.clone(),
-            other => panic!("expected Opened, got {other:?}"),
+            [Event::ConfigChanged(_), Event::Opened { entries, .. }] => entries.clone(),
+            other => panic!("expected ConfigChanged + Opened, got {other:?}"),
         };
         assert_eq!(entries.len(), 3, "a.txt + dir/ + dir/b.txt");
 
@@ -1697,10 +1749,10 @@ mod tests {
             },
         );
         match &events[..] {
-            [Event::Opened { entries, .. }] => {
+            [Event::ConfigChanged(_), Event::Opened { entries, .. }] => {
                 assert_eq!(entries.len(), 3, "tar.xz should list a.txt/dir/dir-b.txt")
             }
-            other => panic!("expected Opened, got {other:?}"),
+            other => panic!("expected ConfigChanged + Opened, got {other:?}"),
         }
     }
 
@@ -1746,8 +1798,10 @@ mod tests {
             },
         );
         match &events[..] {
-            [Event::Opened { entries, .. }] => assert_eq!(entries.len(), 3),
-            other => panic!("expected Opened, got {other:?}"),
+            [Event::ConfigChanged(_), Event::Opened { entries, .. }] => {
+                assert_eq!(entries.len(), 3)
+            }
+            other => panic!("expected ConfigChanged + Opened, got {other:?}"),
         }
 
         // …and extraction decodes the encrypted content.
