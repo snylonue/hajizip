@@ -3,6 +3,7 @@
 //! The whole crate forbids `unsafe` (see `AGENTS.md`). The underlying windowing
 //! stack (wry / tao) is framework-level and outside this crate's source.
 
+#![windows_subsystem = "windows"]
 #![forbid(unsafe_code)]
 
 mod app;
