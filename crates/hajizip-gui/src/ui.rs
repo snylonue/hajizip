@@ -7,7 +7,9 @@ use std::collections::HashSet;
 use dioxus::prelude::*;
 use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, NodeKind, OverwritePolicy};
 
-use crate::config::AppConfig;
+use crate::config::{
+    AppConfig, encoding_to_str, overwrite_to_str, str_to_encoding, str_to_overwrite,
+};
 use crate::controller::BreadcrumbSegment;
 use crate::icons::{Icon, IconView};
 use crate::viewmodel;
@@ -514,8 +516,8 @@ pub fn SettingsPanel(
     on_close: EventHandler<()>,
 ) -> Element {
     let cfg = config.read().clone();
-    let enc_value = encoding_value(cfg.filename_encoding);
-    let ovr_value = overwrite_value(cfg.overwrite_policy);
+    let enc_value = encoding_to_str(cfg.filename_encoding);
+    let ovr_value = overwrite_to_str(cfg.overwrite_policy);
     // Per-option help line under each select, updated live.
     let enc_hint = encoding_hint(&cfg.filename_encoding);
     let ovr_hint = overwrite_hint(cfg.overwrite_policy);
@@ -541,16 +543,13 @@ pub fn SettingsPanel(
                         class: "settings-select",
                         value: enc_value,
                         onchange: move |e| {
-                            if let Some(enc) = parse_encoding(&e.value()) {
+                            if let Some(enc) = str_to_encoding(&e.value()) {
                                 on_encoding.call(enc);
                             }
                         },
-                        option { value: "auto", "Auto (detect)" }
-                        option { value: "utf8", "UTF-8" }
-                        option { value: "gbk", "GBK (Simplified Chinese)" }
-                        option { value: "shift-jis", "Shift-JIS (Japanese)" }
-                        option { value: "big5", "Big5 (Traditional Chinese)" }
-                        option { value: "cp437", "CP437 (DOS)" }
+                        for (tag, label) in ENCODING_OPTIONS {
+                            option { value: "{tag}", "{label}" }
+                        }
                     }
                     p { class: "settings-hint", "{enc_hint}" }
                 }
@@ -560,14 +559,13 @@ pub fn SettingsPanel(
                         class: "settings-select",
                         value: ovr_value,
                         onchange: move |e| {
-                            if let Some(policy) = parse_overwrite(&e.value()) {
+                            if let Some(policy) = str_to_overwrite(&e.value()) {
                                 on_overwrite.call(policy);
                             }
                         },
-                        option { value: "ask", "Ask when a file exists" }
-                        option { value: "always", "Always overwrite" }
-                        option { value: "never", "Never overwrite" }
-                        option { value: "newer", "Overwrite if newer" }
+                        for (tag, label) in OVERWRITE_OPTIONS {
+                            option { value: "{tag}", "{label}" }
+                        }
                         option { value: "rename", disabled: true, "Keep both — rename (coming soon)" }
                     }
                     p { class: "settings-hint", "{ovr_hint}" }
@@ -738,7 +736,7 @@ pub fn EncodingBanner(
     /// Called to dismiss the banner for this archive.
     on_dismiss: EventHandler<()>,
 ) -> Element {
-    let enc_value = encoding_value(config.read().filename_encoding);
+    let enc_value = encoding_to_str(config.read().filename_encoding);
     rsx! {
         div { class: "encoding-banner",
             IconView { icon: Icon::Key, size: 14, class: Some("banner-icon".to_string()) }
@@ -750,16 +748,13 @@ pub fn EncodingBanner(
                 class: "banner-select",
                 value: enc_value,
                 onchange: move |e| {
-                    if let Some(enc) = parse_encoding(&e.value()) {
+                    if let Some(enc) = str_to_encoding(&e.value()) {
                         on_encoding.call(enc);
                     }
                 },
-                option { value: "auto", "Auto (detect)" }
-                option { value: "utf8", "UTF-8" }
-                option { value: "gbk", "GBK (Simplified Chinese)" }
-                option { value: "shift-jis", "Shift-JIS (Japanese)" }
-                option { value: "big5", "Big5 (Traditional Chinese)" }
-                option { value: "cp437", "CP437 (DOS)" }
+                for (tag, label) in ENCODING_OPTIONS {
+                    option { value: "{tag}", "{label}" }
+                }
             }
             button {
                 class: "banner-close",
@@ -775,49 +770,24 @@ pub fn EncodingBanner(
 // Encoding / overwrite helpers
 // ---------------------------------------------------------------------------
 
-/// `<option>` value for a filename encoding.
-fn encoding_value(e: FilenameEncoding) -> &'static str {
-    match e {
-        FilenameEncoding::Auto => "auto",
-        FilenameEncoding::Forced(hajizip_core::Codepage::Utf8) => "utf8",
-        FilenameEncoding::Forced(hajizip_core::Codepage::Gbk) => "gbk",
-        FilenameEncoding::Forced(hajizip_core::Codepage::ShiftJis) => "shift-jis",
-        FilenameEncoding::Forced(hajizip_core::Codepage::Big5) => "big5",
-        FilenameEncoding::Forced(hajizip_core::Codepage::Cp437) => "cp437",
-    }
-}
+/// `(tag, label)` pairs for the filename-encoding `<option>` lists. Tags are
+/// the persistence contract (`config::encoding_to_str`); labels are UI text.
+/// Both settings panel and the encoding banner iterate this single list, so a
+/// new codepage is added in one place (see
+/// `local-doc/review-current-2026-08-05.md` §2).
+const ENCODING_OPTIONS: &[(&str, &str)] = &[
+    ("auto", "Auto (detect)"),
+    ("utf8", "UTF-8"),
+    ("gbk", "GBK (Simplified Chinese)"),
+    ("shift-jis", "Shift-JIS (Japanese)"),
+    ("big5", "Big5 (Traditional Chinese)"),
+    ("cp437", "CP437 (DOS)"),
+];
 
-/// Parse an `<option>` value back into a filename encoding.
-fn parse_encoding(s: &str) -> Option<FilenameEncoding> {
-    use hajizip_core::Codepage;
-    Some(match s {
-        "auto" => FilenameEncoding::Auto,
-        "utf8" => FilenameEncoding::Forced(Codepage::Utf8),
-        "gbk" => FilenameEncoding::Forced(Codepage::Gbk),
-        "shift-jis" => FilenameEncoding::Forced(Codepage::ShiftJis),
-        "big5" => FilenameEncoding::Forced(Codepage::Big5),
-        "cp437" => FilenameEncoding::Forced(Codepage::Cp437),
-        _ => return None,
-    })
-}
-
-/// `<option>` value for an overwrite policy.
-fn overwrite_value(p: OverwritePolicy) -> &'static str {
-    match p {
-        OverwritePolicy::Ask => "ask",
-        OverwritePolicy::Always => "always",
-        OverwritePolicy::Never => "never",
-        OverwritePolicy::Newer => "newer",
-    }
-}
-
-/// Parse an `<option>` value back into an overwrite policy.
-fn parse_overwrite(s: &str) -> Option<OverwritePolicy> {
-    Some(match s {
-        "ask" => OverwritePolicy::Ask,
-        "always" => OverwritePolicy::Always,
-        "never" => OverwritePolicy::Never,
-        "newer" => OverwritePolicy::Newer,
-        _ => return None,
-    })
-}
+/// `(tag, label)` pairs for the overwrite-policy `<option>` list.
+const OVERWRITE_OPTIONS: &[(&str, &str)] = &[
+    ("ask", "Ask when a file exists"),
+    ("always", "Always overwrite"),
+    ("never", "Never overwrite"),
+    ("newer", "Overwrite if newer"),
+];

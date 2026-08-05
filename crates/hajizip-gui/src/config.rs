@@ -174,7 +174,11 @@ impl From<PersistedConfig> for AppConfig {
 }
 
 /// Stable string tags for overwrite policies (TOML is human-readable).
-fn overwrite_to_str(p: OverwritePolicy) -> &'static str {
+///
+/// Shared with the UI's `<option>` values so persistence and the settings
+/// panel can never drift apart (see `local-doc/review-current-2026-08-05.md`
+/// §2).
+pub fn overwrite_to_str(p: OverwritePolicy) -> &'static str {
     match p {
         OverwritePolicy::Ask => "ask",
         OverwritePolicy::Always => "always",
@@ -183,7 +187,7 @@ fn overwrite_to_str(p: OverwritePolicy) -> &'static str {
     }
 }
 
-fn str_to_overwrite(s: &str) -> Option<OverwritePolicy> {
+pub fn str_to_overwrite(s: &str) -> Option<OverwritePolicy> {
     match s {
         "ask" => Some(OverwritePolicy::Ask),
         "always" => Some(OverwritePolicy::Always),
@@ -194,7 +198,7 @@ fn str_to_overwrite(s: &str) -> Option<OverwritePolicy> {
 }
 
 /// Stable string tags for filename encodings.
-fn encoding_to_str(e: FilenameEncoding) -> &'static str {
+pub fn encoding_to_str(e: FilenameEncoding) -> &'static str {
     match e {
         FilenameEncoding::Auto => "auto",
         FilenameEncoding::Forced(Codepage::Utf8) => "utf8",
@@ -205,7 +209,7 @@ fn encoding_to_str(e: FilenameEncoding) -> &'static str {
     }
 }
 
-fn str_to_encoding(s: &str) -> Option<FilenameEncoding> {
+pub fn str_to_encoding(s: &str) -> Option<FilenameEncoding> {
     match s {
         "auto" => Some(FilenameEncoding::Auto),
         "utf8" => Some(FilenameEncoding::Forced(Codepage::Utf8)),
