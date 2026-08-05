@@ -14,8 +14,8 @@
 .app-header {
     display: flex;
     align-items: center;
-    padding: 0 16px;
-    height: 48px;
+    padding: 0 12px;
+    height: 44px;
     background: var(--c-surface);
     border-bottom: 1px solid var(--c-border);
     box-shadow: var(--shadow-sm);
@@ -92,7 +92,7 @@
     align-items: center;
     gap: 4px;
     padding: 0 12px;
-    min-height: 40px;
+    min-height: 36px;
     background: var(--c-surface);
     border-bottom: 1px solid var(--c-border);
     flex-shrink: 0;
@@ -197,6 +197,9 @@
     text-overflow: ellipsis;
     white-space: nowrap;
     width: 100%;
+    height: 30px;
+    padding: 0 10px;
+    font-size: 12px;
 }
 
 /* --- Status bar ---------------------------------------------------------- */

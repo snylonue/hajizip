@@ -8,9 +8,10 @@
     align-items: center;
     justify-content: center;
     gap: 5px;
-    padding: 6px 14px;
-    font-size: 12px;
-    font-weight: 500;
+    height: 32px;
+    padding: 0 12px;
+    font-size: 13px;
+    font-weight: 400;
     font-family: inherit;
     border-radius: var(--radius);
     cursor: pointer;
@@ -19,7 +20,7 @@
     background: var(--c-surface);
     color: var(--c-text);
     white-space: nowrap;
-    line-height: 1.4;
+    line-height: 1;
     user-select: none;
 }
 
@@ -57,13 +58,14 @@
 
 .btn-ghost:hover { background: var(--c-hover); color: var(--c-text); }
 
-.btn-sm { padding: 4px 10px; font-size: 12px; }
-
+/* Icon-only button: fixed square, no text padding. */
 .btn-icon {
-    padding: 5px 8px;
-    font-size: 14px;
-    min-width: 30px;
+    width: 32px;
+    padding: 0;
+    color: var(--c-text-2);
 }
+
+.btn-icon:hover { color: var(--c-text); }
 
 /* --- Tree panel ---------------------------------------------------------- */
 .tree {
