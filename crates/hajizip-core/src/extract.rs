@@ -27,6 +27,16 @@ pub enum OverwritePolicy {
     Newer,
 }
 
+/// The user's decision for an existing destination file when the overwrite
+/// policy is [`OverwritePolicy::Ask`].
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum OverwriteDecision {
+    /// Replace the existing file with the archive entry.
+    Overwrite,
+    /// Leave the existing file untouched (counted as skipped).
+    Skip,
+}
+
 /// Safety limits guarding against zip-bombs and runaway recursion.
 #[derive(Debug, Clone, Copy)]
 pub struct SafetyLimits {
@@ -84,6 +94,14 @@ pub trait ProgressSink: Send {
     fn on_bytes(&mut self, delta: u64);
     /// Called when an entry finishes.
     fn on_entry_done(&mut self, path: &EntryPath);
+    /// Called when `opts.overwrite == OverwritePolicy::Ask` and the
+    /// destination file already exists. The sink decides whether to replace
+    /// it. The default is [`OverwriteDecision::Skip`] (safe default); an
+    /// interactive frontend overrides this to ask the user, blocking until
+    /// the answer arrives.
+    fn on_ask_overwrite(&mut self, _path: &EntryPath, _dest: &Path) -> OverwriteDecision {
+        OverwriteDecision::Skip
+    }
 }
 
 /// A thread-safe cancellation token.
@@ -239,7 +257,7 @@ impl ExtractEngine {
                 report.skipped += 1;
             }
             NodeKind::File | NodeKind::Archive => {
-                if should_skip_existing(meta, &dest, opts) {
+                if should_skip_existing(meta, &dest, opts, progress) {
                     report.skipped += 1;
                     return Ok(());
                 }
@@ -287,16 +305,24 @@ fn resolve_selection(archive: &dyn Archive, selection: &[EntryPath]) -> Result<V
 }
 
 /// Whether an existing destination file should be skipped under `opts`.
-fn should_skip_existing(meta: &EntryMeta, dest: &Path, opts: &ExtractOptions) -> bool {
+fn should_skip_existing(
+    meta: &EntryMeta,
+    dest: &Path,
+    opts: &ExtractOptions,
+    progress: &mut dyn ProgressSink,
+) -> bool {
     if !dest.exists() {
         return false;
     }
     match opts.overwrite {
         OverwritePolicy::Always => false,
-        // `Ask` has no interactive channel in the frozen `ProgressSink` API;
-        // skipping existing files is the safe default (matches the GUI's
-        // current behaviour, see local-doc/gui-m1.md coordination point 3).
-        OverwritePolicy::Ask | OverwritePolicy::Never => true,
+        // `Ask` delegates the decision to the sink; the default implementation
+        // skips existing files (safe default, matches the GUI's behaviour
+        // before the interactive dialog was wired up).
+        OverwritePolicy::Ask => {
+            progress.on_ask_overwrite(&meta.path, dest) == OverwriteDecision::Skip
+        }
+        OverwritePolicy::Never => true,
         OverwritePolicy::Newer => {
             match (
                 meta.mtime,

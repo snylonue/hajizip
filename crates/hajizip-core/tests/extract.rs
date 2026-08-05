@@ -9,7 +9,7 @@ use hajizip_core::registry::Registry;
 use hajizip_core::source::Source;
 use hajizip_core::{
     Archive, CancellationToken, EntryPath, Error, ExtractEngine, ExtractOptions, ExtractReport,
-    OverwritePolicy, ProgressSink, SafetyLimits,
+    OverwriteDecision, OverwritePolicy, ProgressSink, SafetyLimits,
 };
 
 /// A self-cleaning temporary directory.
@@ -114,6 +114,24 @@ impl ProgressSink for CancelAfterFirst {
         if self.done == 1 {
             self.cancel.cancel();
         }
+    }
+}
+
+/// A sink that records `Ask` conflicts and resolves them per archive path.
+struct AskDecider {
+    /// (archive path, destination path) pairs the sink was consulted for.
+    asks: Vec<(String, String)>,
+    choose: fn(&str) -> OverwriteDecision,
+}
+
+impl ProgressSink for AskDecider {
+    fn on_entry_start(&mut self, _path: &EntryPath, _size: Option<u64>) {}
+    fn on_bytes(&mut self, _delta: u64) {}
+    fn on_entry_done(&mut self, _path: &EntryPath) {}
+    fn on_ask_overwrite(&mut self, path: &EntryPath, dest: &Path) -> OverwriteDecision {
+        self.asks
+            .push((path.as_str().to_owned(), dest.display().to_string()));
+        (self.choose)(path.as_str())
     }
 }
 
@@ -224,6 +242,8 @@ fn unknown_selection_entry_fails_run() {
 
 #[test]
 fn overwrite_never_and_ask_skip_existing() {
+    // `Ask` uses the sink's default decision (Skip), so it behaves like
+    // `Never` unless the sink overrides `on_ask_overwrite`.
     for policy in [OverwritePolicy::Never, OverwritePolicy::Ask] {
         let archive = open_zip("basic.zip");
         let dir = TestDir::new("skip");
@@ -251,6 +271,82 @@ fn overwrite_never_and_ask_skip_existing() {
             b"nested content\n"
         );
     }
+}
+
+#[test]
+fn overwrite_ask_consults_sink_for_each_conflict() {
+    let archive = open_zip("basic.zip");
+    let dir = TestDir::new("ask-decide");
+    std::fs::create_dir_all(dir.path().join("dir")).expect("seed dir");
+    std::fs::write(dir.path().join("a.txt"), b"stale-a").expect("pre-seed");
+    std::fs::write(dir.path().join("dir/b.txt"), b"stale-b").expect("pre-seed");
+    let mut sink = AskDecider {
+        asks: Vec::new(),
+        choose: |p| {
+            if p == "a.txt" {
+                OverwriteDecision::Overwrite
+            } else {
+                OverwriteDecision::Skip
+            }
+        },
+    };
+    let report = run(
+        &*archive,
+        &[],
+        ExtractOptions {
+            dest_dir: dir.path().to_path_buf(),
+            overwrite: OverwritePolicy::Ask,
+            ..Default::default()
+        },
+        &mut sink,
+        &CancellationToken::new(),
+    )
+    .expect("extracts");
+    assert_eq!(report.extracted, 2); // a.txt (overwritten) + dir/
+    assert_eq!(report.skipped, 1); // dir/b.txt (skipped)
+    assert_eq!(
+        std::fs::read(dir.path().join("a.txt")).expect("a"),
+        b"Hello, hajizip!\n"
+    );
+    assert_eq!(
+        std::fs::read(dir.path().join("dir/b.txt")).expect("b"),
+        b"stale-b"
+    );
+    // The sink was consulted for both existing files, in entry order, and
+    // received the resolved destination path.
+    assert_eq!(sink.asks.len(), 2);
+    assert_eq!(sink.asks[0].0, "a.txt");
+    assert!(sink.asks[0].1.ends_with("a.txt"));
+    assert_eq!(sink.asks[1].0, "dir/b.txt");
+    assert!(sink.asks[1].1.ends_with("dir/b.txt"));
+}
+
+#[test]
+fn overwrite_ask_skips_when_sink_chooses_skip() {
+    let archive = open_zip("basic.zip");
+    let dir = TestDir::new("ask-skip");
+    std::fs::write(dir.path().join("a.txt"), b"stale").expect("pre-seed");
+    let mut sink = AskDecider {
+        asks: Vec::new(),
+        choose: |_| OverwriteDecision::Skip,
+    };
+    let report = run(
+        &*archive,
+        &[],
+        ExtractOptions {
+            dest_dir: dir.path().to_path_buf(),
+            overwrite: OverwritePolicy::Ask,
+            ..Default::default()
+        },
+        &mut sink,
+        &CancellationToken::new(),
+    )
+    .expect("extracts");
+    assert_eq!(report.skipped, 1);
+    assert_eq!(
+        std::fs::read(dir.path().join("a.txt")).expect("file"),
+        b"stale"
+    );
 }
 
 #[test]

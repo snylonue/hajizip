@@ -25,8 +25,8 @@ pub use codec::Codec;
 pub use encoding::{Codepage, FilenameEncoding, Utf8Flag, decode_filename};
 pub use error::{Error, Result};
 pub use extract::{
-    CancellationToken, ExtractEngine, ExtractOptions, ExtractReport, OverwritePolicy, ProgressSink,
-    SafetyLimits,
+    CancellationToken, ExtractEngine, ExtractOptions, ExtractReport, OverwriteDecision,
+    OverwritePolicy, ProgressSink, SafetyLimits,
 };
 pub use format::{ArchiveFormat, CodecFormat};
 pub use model::{EntryMeta, EntryPath, Level, Location, NodeKind, Secret, Timestamp};
