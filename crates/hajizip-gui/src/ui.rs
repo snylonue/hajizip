@@ -9,6 +9,7 @@ use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, NodeKind, OverwritePo
 
 use crate::config::AppConfig;
 use crate::controller::{BreadcrumbSegment, ProgressUpdate};
+use crate::icons::{Icon, IconView};
 use crate::viewmodel;
 
 // ---------------------------------------------------------------------------
@@ -96,8 +97,8 @@ struct RowView {
     path: EntryPath,
     is_dir: bool,
     indent: usize,
-    arrow: &'static str,
-    icon: &'static str,
+    arrow: Option<Icon>,
+    icon: Icon,
     name: String,
     row_class: &'static str,
 }
@@ -120,13 +121,13 @@ pub fn TreeView(
             let is_dir = row.is_dir;
             let is_expanded = expanded.read().contains(&path);
             let arrow = if !is_dir {
-                ""
+                None
             } else if is_expanded {
-                "▾"
+                Some(Icon::ChevronDown)
             } else {
-                "▸"
+                Some(Icon::ChevronRight)
             };
-            let icon = if is_dir { "📁" } else { "📄" };
+            let icon = if is_dir { Icon::Folder } else { Icon::File };
             let name = path.as_str().rsplit('/').next().unwrap_or("").to_string();
             RowView {
                 path,
@@ -187,8 +188,16 @@ fn render_tree_row(
                     on_navigate.call(nav_path.clone());
                 }
             },
-            span { class: "tree-arrow", "{arrow}" }
-            span { class: "tree-icon", "{icon}" }
+            if let Some(arrow) = arrow {
+                span { class: "tree-arrow",
+                    IconView { icon: arrow, size: 12 }
+                }
+            } else {
+                span { class: "tree-arrow" }
+            }
+            span { class: "tree-icon",
+                IconView { icon: icon, size: 14 }
+            }
             span { class: "tree-name", "{name}" }
         }
     }
@@ -215,12 +224,15 @@ struct FileRowView {
     path: EntryPath,
     selected: bool,
     name: String,
-    lock: &'static str,
+    locked: bool,
     size: String,
     kind: String,
     time: String,
     /// Whether this row is a plain file (double-click previews it).
     is_file: bool,
+    /// Type icon for the NAME column plus its tint class.
+    type_icon: Icon,
+    type_class: &'static str,
 }
 
 /// Right file list: children of the current focus directory.
@@ -246,15 +258,18 @@ pub fn FileList(
         .iter()
         .map(|entry| {
             let path = entry.path.clone();
+            let (type_icon, type_class) = viewmodel::file_icon(entry);
             FileRowView {
                 selected: selected_now.contains(&path),
                 name: path.as_str().rsplit('/').next().unwrap_or("").to_string(),
-                lock: if entry.encrypted { "🔒" } else { "" },
+                locked: entry.encrypted,
                 size: viewmodel::size_label(entry),
                 kind: viewmodel::kind_label(entry.kind).to_string(),
                 time: viewmodel::time_label(entry.mtime),
                 path,
                 is_file: entry.kind == NodeKind::File,
+                type_icon,
+                type_class,
             }
         })
         .collect();
@@ -291,10 +306,12 @@ fn render_file_row(
 ) -> Element {
     let path = row.path.clone();
     let name = row.name.clone();
-    let lock = row.lock;
+    let locked = row.locked;
     let size = row.size.clone();
     let kind = row.kind.clone();
     let time = row.time.clone();
+    let type_icon = row.type_icon;
+    let type_class = row.type_class;
     let toggle_path = path.clone();
     let open_path = path.clone();
     let preview_path = path.clone();
@@ -321,8 +338,17 @@ fn render_file_row(
                     on_open.call(open_path.clone());
                 }
             },
-            td { class: "col-lock", "{lock}" }
-            td { class: "col-name", "{name}" }
+            td { class: "col-lock",
+                if locked {
+                    IconView { icon: Icon::Lock, size: 12, class: Some("icon-lock".to_string()) }
+                }
+            }
+            td { class: "col-name",
+                span { class: "name-icon",
+                    IconView { icon: type_icon, size: 15, class: Some(type_class.to_string()) }
+                }
+                span { class: "name-text", "{name}" }
+            }
             td { class: "col-size", "{size}" }
             td { class: "col-type", "{kind}" }
             td { class: "col-modified", "{time}" }
@@ -350,7 +376,10 @@ pub fn PasswordDialog(
     rsx! {
         div { class: "modal-overlay",
             div { class: "modal-card modal-card-sm",
-                h3 { class: "modal-title", "🔐 Password Required" }
+                h3 { class: "modal-title",
+                    IconView { icon: Icon::Key, size: 16, class: Some("title-icon".to_string()) }
+                    "Password Required"
+                }
                 p { class: "modal-desc", "{path}" }
                 if let Some(err) = error {
                     p { class: "modal-error", "{err}" }
@@ -391,7 +420,10 @@ pub fn ProgressDialog(
     rsx! {
         div { class: "modal-overlay",
             div { class: "modal-card modal-card-md",
-                h3 { class: "modal-title", "📦 Extracting…" }
+                h3 { class: "modal-title",
+                    IconView { icon: Icon::Download, size: 16, class: Some("title-icon".to_string()) }
+                    "Extracting…"
+                }
                 p { class: "modal-desc", "{label}" }
                 div { class: "progress-track",
                     div { class: "progress-fill", style: "width: {percent}%;" }
@@ -445,7 +477,10 @@ pub fn SettingsPanel(
     rsx! {
         div { class: "modal-overlay",
             div { class: "modal-card modal-card-lg",
-                h3 { class: "modal-title", "⚙️ Settings" }
+                h3 { class: "modal-title",
+                    IconView { icon: Icon::Settings, size: 16, class: Some("title-icon".to_string()) }
+                    "Settings"
+                }
                 div { class: "settings-group",
                     label { class: "settings-label", "Filename encoding" }
                     select {

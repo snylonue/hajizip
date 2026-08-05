@@ -91,19 +91,24 @@
 .tree-row-dir { font-weight: 600; color: var(--c-text); }
 .tree-row-file { font-weight: 400; color: var(--c-text-2); }
 
-.tree-arrow {
-    width: 16px;
-    text-align: center;
-    font-size: 9px;
-    color: var(--c-text-3);
-    flex-shrink: 0;
-}
-
 .tree-icon {
-    font-size: 14px;
+    display: flex;
+    align-items: center;
+    justify-content: center;
     flex-shrink: 0;
     width: 18px;
-    text-align: center;
+    color: var(--c-text-3);
+}
+
+.tree-row-dir .tree-icon { color: var(--c-primary); }
+
+.tree-arrow {
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    width: 16px;
+    flex-shrink: 0;
+    color: var(--c-text-3);
 }
 
 .tree-name {
@@ -174,6 +179,35 @@
 
 .filelist tr.file-row-selected { background: var(--c-selected) !important; }
 .filelist tr.file-row-selected td { border-bottom-color: var(--c-selected-border); }
+
+/* NAME column: type icon + label */
+.filelist td.col-name {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    overflow: hidden;
+}
+
+.name-icon {
+    display: inline-flex;
+    flex-shrink: 0;
+}
+
+.name-text {
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+/* Type icon tints (theme-aware base colour comes from `currentColor`) */
+.icon-type-dir { color: var(--c-primary); }
+.icon-type-archive { color: #2563eb; }
+.icon-type-code { color: #d97706; }
+.icon-type-image { color: #16a34a; }
+.icon-type-text { color: #64748b; }
+.icon-type-default { color: #94a3b8; }
+
+.icon-lock { color: var(--c-warning); }
 
 /* --- Modal overlay & card ------------------------------------------------ */
 .modal-overlay {

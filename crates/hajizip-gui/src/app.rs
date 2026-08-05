@@ -22,6 +22,7 @@ use crate::config::AppConfig;
 use crate::controller::{
     BreadcrumbSegment, ControllerHandle, Event, Intent, ProgressUpdate, spawn_controller,
 };
+use crate::icons::{Icon, IconView};
 use crate::registry::compose_registry;
 use crate::ui::{
     Breadcrumb, CSS, FileList, PasswordDialog, ProgressDialog, SettingsPanel, TreeView,
@@ -309,9 +310,9 @@ pub fn App() -> Element {
     // reflects the live selection so the behavior is never ambiguous.
     let selection_count = selection.read().len();
     let extract_label = if selection_count == 0 {
-        "📤 Extract all".to_string()
+        "Extract all".to_string()
     } else {
-        format!("📤 Extract ({selection_count} selected)")
+        format!("Extract ({selection_count} selected)")
     };
 
     rsx! {
@@ -333,39 +334,35 @@ pub fn App() -> Element {
 
             // ── Header ─────────────────────────────────────────────────
             header { class: "app-header",
-                div { class: "app-logo",
-                    span { class: "app-logo-icon", "📦" }
-                    "hajizip"
-                }
                 div { class: "header-actions",
-                    button { class: "btn btn-primary btn-sm", onclick: open_dialog,
-                        "📂 Open"
+                    button { class: "btn btn-primary", onclick: open_dialog,
+                        IconView { icon: Icon::FolderOpen, size: 16 }
+                        "Open"
                     }
                     button {
-                        class: "btn btn-sm",
+                        class: "btn",
                         onclick: extract_all,
                         disabled: !has_archive_value,
                         title: "Extract the selected entries, or the whole archive if nothing is selected",
+                        IconView { icon: Icon::Download, size: 16 }
                         "{extract_label}"
                     }
                     button {
-                        class: "btn btn-ghost btn-sm",
+                        class: "btn btn-icon",
                         onclick: move |_| settings_open.set(true),
-                        "⚙️"
+                        title: "Settings",
+                        IconView { icon: Icon::Settings, size: 16 }
                     }
                 }
                 div { class: "header-spacer" }
-                if has_archive_value {
-                    span { class: "header-archive-name", "{archive_name}" }
-                }
             }
 
             // ── Main content ────────────────────────────────────────────
             if has_archive_value {
                 // Toolbar with navigation
                 div { class: "toolbar",
-                    button { class: "btn btn-sm btn-icon", onclick: back, title: "Go up one level",
-                        "↑"
+                    button { class: "btn btn-icon", onclick: back, title: "Go up one level",
+                        IconView { icon: Icon::CornerUpLeft, size: 16 }
                     }
                 }
 
@@ -390,7 +387,9 @@ pub fn App() -> Element {
                 }
             } else {
                 div { class: "empty-state",
-                    div { class: "empty-icon", "📦" }
+                    div { class: "empty-icon",
+                        IconView { icon: Icon::Package, size: 56 }
+                    }
                     div { class: "empty-title", "No Archive Open" }
                     div { class: "empty-hint",
                         "Click "

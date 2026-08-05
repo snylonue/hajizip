@@ -30,3 +30,12 @@ html, body {
 }
 ::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
 ::-webkit-scrollbar-corner { background: transparent; }
+
+/* Inline SVG icon (Lucide line style) */
+.icon {
+    display: inline-block;
+    flex-shrink: 0;
+    vertical-align: middle;
+}
+
+.title-icon { margin-right: 8px; color: var(--c-primary); }

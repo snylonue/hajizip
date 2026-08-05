@@ -10,6 +10,8 @@ use std::time::SystemTime;
 
 use hajizip_core::{EntryMeta, EntryPath, NodeKind};
 
+use crate::icons::Icon;
+
 /// A row of the (left) tree panel: the entry plus its indentation depth.
 #[derive(Debug, Clone)]
 pub struct TreeRow {
@@ -85,6 +87,42 @@ pub fn kind_label(kind: NodeKind) -> &'static str {
         NodeKind::Dir => "Folder",
         NodeKind::Archive => "Archive",
         NodeKind::Symlink => "Symlink",
+    }
+}
+
+/// Type icon for a file-list row, chosen by entry kind and file extension.
+///
+/// Archives get a distinct icon, executables/sources a code icon, images an
+/// image icon, text a text icon, and everything else a neutral file icon.
+/// Directories are always a folder. Returns the icon plus the CSS class that
+/// tints it (the icon itself is theme-aware via `currentColor`).
+pub fn file_icon(entry: &EntryMeta) -> (Icon, &'static str) {
+    match entry.kind {
+        NodeKind::Dir => (Icon::Folder, "icon-type-dir"),
+        NodeKind::Archive => (Icon::FileArchive, "icon-type-archive"),
+        NodeKind::Symlink => (Icon::File, "icon-type-default"),
+        NodeKind::File => file_icon_by_ext(entry.path.as_str()),
+    }
+}
+
+/// Icon for a plain file, chosen by its extension.
+fn file_icon_by_ext(name: &str) -> (Icon, &'static str) {
+    let ext = name.rsplit('.').next().unwrap_or("").to_ascii_lowercase();
+    match ext.as_str() {
+        // Archives that core may report as plain files (e.g. unmarked).
+        "zip" | "tar" | "gz" | "tgz" | "xz" | "txz" | "7z" | "rar" => {
+            (Icon::FileArchive, "icon-type-archive")
+        }
+        "exe" | "msi" | "bat" | "cmd" | "sh" | "bash" | "ps1" | "app" | "dll" | "so" | "dylib"
+        | "rs" | "py" | "js" | "ts" | "c" | "h" | "cpp" | "java" | "go" | "html" | "css"
+        | "json" | "xml" | "yml" | "yaml" | "toml" | "ini" | "conf" | "sql" => {
+            (Icon::FileCode, "icon-type-code")
+        }
+        "png" | "jpg" | "jpeg" | "gif" | "webp" | "bmp" | "svg" | "ico" | "avif" | "heic"
+        | "tiff" | "tif" => (Icon::FileImage, "icon-type-image"),
+        "txt" | "md" | "markdown" | "log" | "rtf" | "csv" | "tsv" | "pdf" | "doc" | "docx"
+        | "xls" | "xlsx" | "ppt" | "pptx" | "odt" | "epub" => (Icon::FileText, "icon-type-text"),
+        _ => (Icon::File, "icon-type-default"),
     }
 }
 
@@ -190,6 +228,50 @@ mod tests {
         assert_eq!(format_bytes(1023), "1023 B");
         assert_eq!(format_bytes(1024), "1.0 KB");
         assert_eq!(format_bytes(5 * 1024 * 1024), "5.0 MB");
+    }
+
+    #[test]
+    fn file_icon_maps_kinds_and_extensions() {
+        use crate::icons::Icon;
+        // Dir / archive / symlink kinds.
+        assert_eq!(
+            file_icon(&meta("dir/", NodeKind::Dir, None)),
+            (Icon::Folder, "icon-type-dir")
+        );
+        assert_eq!(
+            file_icon(&meta("pkg.zip", NodeKind::Archive, None)),
+            (Icon::FileArchive, "icon-type-archive")
+        );
+        assert_eq!(
+            file_icon(&meta("link", NodeKind::Symlink, None)),
+            (Icon::File, "icon-type-default")
+        );
+        // Extensions: archives / code / image / text / default.
+        assert_eq!(
+            file_icon(&meta("a.7z", NodeKind::File, None)),
+            (Icon::FileArchive, "icon-type-archive")
+        );
+        assert_eq!(
+            file_icon(&meta("run.exe", NodeKind::File, None)),
+            (Icon::FileCode, "icon-type-code")
+        );
+        assert_eq!(
+            file_icon(&meta("UPPER.PNG", NodeKind::File, None)),
+            (Icon::FileImage, "icon-type-image")
+        );
+        assert_eq!(
+            file_icon(&meta("notes.md", NodeKind::File, None)),
+            (Icon::FileText, "icon-type-text")
+        );
+        assert_eq!(
+            file_icon(&meta("mystery.bin", NodeKind::File, None)),
+            (Icon::File, "icon-type-default")
+        );
+        // No extension.
+        assert_eq!(
+            file_icon(&meta("README", NodeKind::File, None)),
+            (Icon::File, "icon-type-default")
+        );
     }
 
     #[test]
