@@ -54,6 +54,78 @@ pub fn filter_children(
         .collect()
 }
 
+/// Sortable column of the file list.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortField {
+    /// Entry name (full path).
+    Name,
+    /// Uncompressed size (missing sizes sort as 0).
+    Size,
+    /// Entry kind label.
+    Type,
+    /// Modification time (missing times sort first).
+    Modified,
+}
+
+/// Sort direction.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub enum SortDir {
+    /// Ascending.
+    Asc,
+    /// Descending.
+    Desc,
+}
+
+/// The active column sort: `None` restores the default (child_entries)
+/// ordering.
+pub type Sort = Option<(SortField, SortDir)>;
+
+/// Cycle a header click: no sort → ascending → descending → no sort.
+///
+/// Clicking a different column while one is active starts that column fresh
+/// in ascending order.
+pub fn cycle_sort(current: Sort, field: SortField) -> Sort {
+    match current {
+        None => Some((field, SortDir::Asc)),
+        Some((f, SortDir::Asc)) if f == field => Some((field, SortDir::Desc)),
+        Some((f, SortDir::Desc)) if f == field => None,
+        Some(_) => Some((field, SortDir::Asc)),
+    }
+}
+
+/// Sort children by `field` in `dir`ection.
+///
+/// Directories always stay above files regardless of direction (they are a
+/// different kind of row, not a value). The sort is stable, so equal keys
+/// keep the default ordering.
+pub fn sort_children(children: Vec<EntryMeta>, field: SortField, dir: SortDir) -> Vec<EntryMeta> {
+    use std::cmp::Ordering;
+    let mut children = children;
+    children.sort_by(|a, b| {
+        let a_dir = a.kind == NodeKind::Dir;
+        let b_dir = b.kind == NodeKind::Dir;
+        match (a_dir, b_dir) {
+            (true, false) => return Ordering::Less,
+            (false, true) => return Ordering::Greater,
+            _ => {}
+        }
+        let ord = match field {
+            SortField::Name => a.path.as_str().cmp(b.path.as_str()),
+            SortField::Size => a
+                .uncompressed_size
+                .unwrap_or(0)
+                .cmp(&b.uncompressed_size.unwrap_or(0)),
+            SortField::Type => kind_label(a.kind).cmp(kind_label(b.kind)),
+            SortField::Modified => a.mtime.cmp(&b.mtime),
+        };
+        match dir {
+            SortDir::Asc => ord,
+            SortDir::Desc => ord.reverse(),
+        }
+    });
+    children
+}
+
 /// Flatten the archive tree into indented rows, expanding only the dirs in
 /// `expanded`. Only directory nodes are shown (files live in the right-hand
 /// list; see `local-doc/review-ui-v2.md` §4.3). An explicit stack keeps the
@@ -409,5 +481,56 @@ mod tests {
 
         // Empty selection → zero.
         assert_eq!(selection_summary(&list, &HashSet::new()), (0, 0));
+    }
+
+    #[test]
+    fn cycle_sort_cycles_asc_desc_none() {
+        assert_eq!(
+            cycle_sort(None, SortField::Name),
+            Some((SortField::Name, SortDir::Asc))
+        );
+        assert_eq!(
+            cycle_sort(Some((SortField::Name, SortDir::Asc)), SortField::Name),
+            Some((SortField::Name, SortDir::Desc))
+        );
+        assert_eq!(
+            cycle_sort(Some((SortField::Name, SortDir::Desc)), SortField::Name),
+            None
+        );
+        // A different column restarts ascending.
+        assert_eq!(
+            cycle_sort(Some((SortField::Name, SortDir::Desc)), SortField::Size),
+            Some((SortField::Size, SortDir::Asc))
+        );
+    }
+
+    #[test]
+    fn sort_children_keeps_dirs_first_and_respects_direction() {
+        let list = vec![
+            meta("z.txt", NodeKind::File, Some(50)),
+            meta("a.txt", NodeKind::File, Some(10)),
+            meta("mid", NodeKind::Dir, None),
+            meta("b.bin", NodeKind::File, Some(20)),
+        ];
+
+        // Name ascending: dir first, then files alphabetically.
+        let sorted = sort_children(list.clone(), SortField::Name, SortDir::Asc);
+        let names: Vec<&str> = sorted.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["mid", "a.txt", "b.bin", "z.txt"]);
+
+        // Name descending: dir still first, files reversed.
+        let sorted = sort_children(list.clone(), SortField::Name, SortDir::Desc);
+        let names: Vec<&str> = sorted.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["mid", "z.txt", "b.bin", "a.txt"]);
+
+        // Size descending: dir first (no size), then largest file.
+        let sorted = sort_children(list.clone(), SortField::Size, SortDir::Desc);
+        let names: Vec<&str> = sorted.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["mid", "z.txt", "b.bin", "a.txt"]);
+
+        // Size ascending.
+        let sorted = sort_children(list, SortField::Size, SortDir::Asc);
+        let names: Vec<&str> = sorted.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["mid", "a.txt", "b.bin", "z.txt"]);
     }
 }

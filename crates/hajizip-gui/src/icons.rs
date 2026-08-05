@@ -47,6 +47,10 @@ pub enum Icon {
     Search,
     /// Clear search / close dialog.
     X,
+    /// Sort indicator (ascending).
+    ArrowUp,
+    /// Sort indicator (descending).
+    ArrowDown,
 }
 
 /// Path data for [`Icon`], in the order they should be drawn.
@@ -114,6 +118,8 @@ fn icon_paths(icon: Icon) -> &'static [&'static str] {
         ],
         Search => &["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z", "m21 21-4.3-4.3"],
         X => &["M18 6 6 18", "m6 6 12 12"],
+        ArrowUp => &["m5 12 7-7 7 7", "M12 19V5"],
+        ArrowDown => &["M12 5v14", "m19 12-7 7-7-7"],
     }
 }
 

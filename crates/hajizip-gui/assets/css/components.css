@@ -170,6 +170,21 @@
 .filelist th.col-modified { width: 150px; }
 .filelist th.col-lock { width: 32px; }
 
+/* Sortable headers: hover affordance + active arrow. */
+.filelist th.th-sortable {
+    cursor: pointer;
+    user-select: none;
+    transition: background 0.1s ease, color 0.1s ease;
+}
+
+.filelist th.th-sortable:hover { background: var(--c-hover); color: var(--c-text); }
+
+.filelist th.th-sortable .th-sort-icon {
+    margin-left: 4px;
+    color: var(--c-primary);
+    vertical-align: -1px;
+}
+
 .filelist td {
     padding: 6px 12px;
     font-size: 13px;

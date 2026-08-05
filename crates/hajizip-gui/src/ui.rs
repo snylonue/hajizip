@@ -256,7 +256,14 @@ pub fn FileList(
 ) -> Element {
     let flat = entries.read().clone();
     let f = focus.read().clone();
-    let children = viewmodel::filter_children(&flat, f.as_ref(), &query);
+    let mut children = viewmodel::filter_children(&flat, f.as_ref(), &query);
+
+    // Column sort lives in the list's own state: cycle Asc → Desc → off.
+    let mut sort = use_signal(viewmodel::Sort::default);
+    if let Some((field, dir)) = *sort.read() {
+        children = viewmodel::sort_children(children, field, dir);
+    }
+
     let selected_now = selected.read().clone();
 
     let views: Vec<FileRowView> = children
@@ -280,16 +287,70 @@ pub fn FileList(
         })
         .collect();
 
+    // Sort indicator for the header of the active column.
+    let active_sort = *sort.read();
+    let sort_icon = |field: viewmodel::SortField| -> Option<Icon> {
+        match active_sort {
+            Some((f, viewmodel::SortDir::Asc)) if f == field => Some(Icon::ArrowUp),
+            Some((f, viewmodel::SortDir::Desc)) if f == field => Some(Icon::ArrowDown),
+            _ => None,
+        }
+    };
+
     rsx! {
         div { class: "filelist",
             table {
                 thead {
                     tr {
                         th { class: "col-lock", "" }
-                        th { "Name" }
-                        th { class: "col-size", "Size" }
-                        th { class: "col-type", "Type" }
-                        th { class: "col-modified", "Modified" }
+                        th {
+                            class: "th-sortable",
+                            title: "Sort by name",
+                            onclick: move |_| {
+                                let next = viewmodel::cycle_sort(*sort.read(), viewmodel::SortField::Name);
+                                sort.set(next);
+                            },
+                            "Name"
+                            if let Some(icon) = sort_icon(viewmodel::SortField::Name) {
+                                IconView { icon: icon, size: 12, class: Some("th-sort-icon".to_string()) }
+                            }
+                        }
+                        th {
+                            class: "col-size th-sortable",
+                            title: "Sort by size",
+                            onclick: move |_| {
+                                let next = viewmodel::cycle_sort(*sort.read(), viewmodel::SortField::Size);
+                                sort.set(next);
+                            },
+                            "Size"
+                            if let Some(icon) = sort_icon(viewmodel::SortField::Size) {
+                                IconView { icon: icon, size: 12, class: Some("th-sort-icon".to_string()) }
+                            }
+                        }
+                        th {
+                            class: "col-type th-sortable",
+                            title: "Sort by type",
+                            onclick: move |_| {
+                                let next = viewmodel::cycle_sort(*sort.read(), viewmodel::SortField::Type);
+                                sort.set(next);
+                            },
+                            "Type"
+                            if let Some(icon) = sort_icon(viewmodel::SortField::Type) {
+                                IconView { icon: icon, size: 12, class: Some("th-sort-icon".to_string()) }
+                            }
+                        }
+                        th {
+                            class: "col-modified th-sortable",
+                            title: "Sort by modification time",
+                            onclick: move |_| {
+                                let next = viewmodel::cycle_sort(*sort.read(), viewmodel::SortField::Modified);
+                                sort.set(next);
+                            },
+                            "Modified"
+                            if let Some(icon) = sort_icon(viewmodel::SortField::Modified) {
+                                IconView { icon: icon, size: 12, class: Some("th-sort-icon".to_string()) }
+                            }
+                        }
                     }
                 }
                 tbody {
