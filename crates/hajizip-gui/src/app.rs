@@ -24,9 +24,7 @@ use crate::controller::{
 };
 use crate::icons::{Icon, IconView};
 use crate::registry::compose_registry;
-use crate::ui::{
-    Breadcrumb, CSS, FileList, PasswordDialog, ProgressDialog, SettingsPanel, TreeView,
-};
+use crate::ui::{Breadcrumb, CSS, FileList, PasswordDialog, SettingsPanel, TreeView};
 use crate::viewmodel;
 
 /// The application root component.
@@ -320,6 +318,44 @@ pub fn App() -> Element {
         .iter()
         .any(|e| e.kind == hajizip_core::NodeKind::Dir);
 
+    // Status bar, left segment: whole-archive summary. The compressed total
+    // is shown only when the format records it (most do).
+    let (item_count, total_size, total_compressed) = {
+        let list = entries.read();
+        viewmodel::archive_summary(&list)
+    };
+    let summary_text = if has_archive_value {
+        if total_compressed > 0 {
+            format!(
+                "{item_count} items · {} (compressed {})",
+                viewmodel::format_bytes(total_size),
+                viewmodel::format_bytes(total_compressed)
+            )
+        } else {
+            format!(
+                "{item_count} items · {}",
+                viewmodel::format_bytes(total_size)
+            )
+        }
+    } else {
+        String::new()
+    };
+
+    // Status bar, middle segment: selected entries summary.
+    let selection_text = {
+        let list = entries.read();
+        let (sel_count, sel_total) = viewmodel::selection_summary(&list, &selection.read());
+        if sel_count > 0 {
+            format!(
+                "{} selected · {}",
+                sel_count,
+                viewmodel::format_bytes(sel_total)
+            )
+        } else {
+            String::new()
+        }
+    };
+
     // The Extract button doubles as "extract partial files": with no selection
     // it extracts the whole archive; with a selection it extracts only the
     // chosen entries (directories select their whole subtree). The label
@@ -465,7 +501,38 @@ pub fn App() -> Element {
             // ── Status bar ──────────────────────────────────────────────
             footer {
                 class: if status_has_text { "statusbar statusbar-has-text" } else { "statusbar" },
-                "{status_text}"
+                // Left: archive summary (whole current archive).
+                if has_archive_value {
+                    span { class: "status-summary", "{summary_text}" }
+                }
+                // Middle: transient feedback, then the selection summary.
+                span {
+                    class: "status-message",
+                    if !status_text.is_empty() {
+                        "{status_text}"
+                    } else if !selection_text.is_empty() {
+                        "{selection_text}"
+                    }
+                }
+                // Right: inline extraction progress + cancel.
+                if let Some(update) = progress.read().clone() {
+                    span { class: "status-progress",
+                        span { class: "status-progress-bar",
+                            span {
+                                class: "status-progress-fill",
+                                style: "width: {viewmodel::progress_percent(&update)}%;",
+                            }
+                        }
+                        span { class: "status-progress-label",
+                            "{update.entries_done} items · {viewmodel::progress_percent(&update)}%"
+                        }
+                        button {
+                            class: "btn btn-ghost btn-xs",
+                            onclick: cancel_extract,
+                            "Cancel"
+                        }
+                    }
+                }
             }
 
             // ── Modal dialogs ───────────────────────────────────────────
@@ -481,13 +548,6 @@ pub fn App() -> Element {
                         });
                     },
                     on_cancel: move |_| password_prompt.set(None),
-                }
-            }
-
-            if let Some(update) = progress.read().clone() {
-                ProgressDialog {
-                    progress: update,
-                    on_cancel: cancel_extract,
                 }
             }
 

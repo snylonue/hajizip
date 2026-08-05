@@ -164,6 +164,42 @@ pub fn time_label(mtime: Option<SystemTime>) -> String {
     format_civil(time::OffsetDateTime::from(mtime).to_offset(offset))
 }
 
+/// Whole-archive summary: (entry count, total uncompressed, total compressed).
+///
+/// Entries without a recorded size contribute 0 to the totals; the caller
+/// decides how to word the summary when a total is unknown.
+pub fn archive_summary(entries: &[EntryMeta]) -> (usize, u64, u64) {
+    let count = entries.len();
+    let uncompressed: u64 = entries.iter().filter_map(|e| e.uncompressed_size).sum();
+    let compressed: u64 = entries.iter().filter_map(|e| e.compressed_size).sum();
+    (count, uncompressed, compressed)
+}
+
+/// Selection summary: (selected count, total uncompressed size).
+///
+/// Only paths that exist in `entries` count, so stale selections from a
+/// previous view cannot inflate the numbers.
+pub fn selection_summary(entries: &[EntryMeta], selected: &HashSet<EntryPath>) -> (usize, u64) {
+    let mut count = 0usize;
+    let mut total = 0u64;
+    for e in entries {
+        if selected.contains(&e.path) {
+            count += 1;
+            total += e.uncompressed_size.unwrap_or(0);
+        }
+    }
+    (count, total)
+}
+
+/// Extraction progress as a percentage (0–100), clamped.
+pub fn progress_percent(progress: &crate::controller::ProgressUpdate) -> u32 {
+    match progress.bytes_total {
+        Some(total) if total > 0 => ((progress.bytes_done as f64 / total as f64) * 100.0) as u32,
+        _ => 0,
+    }
+    .min(100)
+}
+
 /// Format a date-time as `YYYY-MM-DD HH:MM` (no seconds).
 fn format_civil(odt: time::OffsetDateTime) -> String {
     format!(
@@ -352,5 +388,26 @@ mod tests {
             .assume_offset(time::UtcOffset::from_hms(8, 0, 0).expect("valid offset"));
         assert_eq!(format_civil(odt), "2026-01-08 11:04");
         assert_eq!(time_label(None), "—");
+    }
+
+    #[test]
+    fn archive_and_selection_summaries() {
+        let list = vec![
+            meta("a.txt", NodeKind::File, Some(10)),
+            meta("b.bin", NodeKind::File, Some(20)),
+            // Sizes are None for some entries (e.g. dirs): they contribute 0.
+            meta("empty", NodeKind::Dir, None),
+        ];
+        let (count, uncompressed, compressed) = archive_summary(&list);
+        assert_eq!((count, uncompressed, compressed), (3, 30, 0));
+
+        let mut selected = HashSet::new();
+        selected.insert(EntryPath::new("a.txt").unwrap());
+        selected.insert(EntryPath::new("missing.txt").unwrap()); // stale
+        let (sel_count, sel_size) = selection_summary(&list, &selected);
+        assert_eq!((sel_count, sel_size), (1, 10));
+
+        // Empty selection → zero.
+        assert_eq!(selection_summary(&list, &HashSet::new()), (0, 0));
     }
 }

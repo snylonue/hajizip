@@ -8,7 +8,7 @@ use dioxus::prelude::*;
 use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, NodeKind, OverwritePolicy};
 
 use crate::config::AppConfig;
-use crate::controller::{BreadcrumbSegment, ProgressUpdate};
+use crate::controller::BreadcrumbSegment;
 use crate::icons::{Icon, IconView};
 use crate::viewmodel;
 
@@ -426,52 +426,6 @@ pub fn PasswordDialog(
             }
         }
     }
-}
-
-// ---------------------------------------------------------------------------
-// Progress dialog
-// ---------------------------------------------------------------------------
-
-/// Modal showing extraction progress with a cancel button.
-#[component]
-pub fn ProgressDialog(
-    /// Latest progress snapshot.
-    progress: ProgressUpdate,
-    /// Called when the user cancels.
-    on_cancel: EventHandler<()>,
-) -> Element {
-    let (percent, label) = progress_label(&progress);
-    rsx! {
-        div { class: "modal-overlay",
-            div { class: "modal-card modal-card-md",
-                h3 { class: "modal-title",
-                    IconView { icon: Icon::Download, size: 16, class: Some("title-icon".to_string()) }
-                    "Extracting…"
-                }
-                p { class: "modal-desc", "{label}" }
-                div { class: "progress-track",
-                    div { class: "progress-fill", style: "width: {percent}%;" }
-                }
-                p { class: "progress-info", "{progress.entries_done} entries processed" }
-                div { class: "modal-actions",
-                    button { class: "btn btn-danger", onclick: move |_| on_cancel.call(()), "Cancel" }
-                }
-            }
-        }
-    }
-}
-
-/// Compute (percent, description) for the progress dialog.
-fn progress_label(progress: &ProgressUpdate) -> (u32, String) {
-    let label = match &progress.current {
-        Some(path) => path.as_str().to_string(),
-        None => "Preparing…".to_string(),
-    };
-    let percent = match progress.bytes_total {
-        Some(total) if total > 0 => ((progress.bytes_done as f64 / total as f64) * 100.0) as u32,
-        _ => 0,
-    };
-    (percent.min(100), label)
 }
 
 // ---------------------------------------------------------------------------

@@ -204,15 +204,65 @@
 
 /* --- Status bar ---------------------------------------------------------- */
 .statusbar {
-    padding: 5px 16px;
+    padding: 0 16px;
     border-top: 1px solid var(--c-border);
     color: var(--c-text-3);
     font-size: 11px;
     background: var(--c-surface);
     flex-shrink: 0;
-    min-height: 26px;
+    min-height: 28px;
     display: flex;
     align-items: center;
+    gap: 16px;
 }
 
 .statusbar-has-text { color: var(--c-text-2); }
+
+.status-summary {
+    color: var(--c-text-2);
+    white-space: nowrap;
+    flex-shrink: 0;
+}
+
+.status-message {
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
+    text-overflow: ellipsis;
+    white-space: nowrap;
+}
+
+.status-progress {
+    display: flex;
+    align-items: center;
+    gap: 8px;
+    flex-shrink: 0;
+}
+
+.status-progress-bar {
+    width: 120px;
+    height: 6px;
+    background: var(--c-border);
+    border-radius: 3px;
+    overflow: hidden;
+}
+
+.status-progress-fill {
+    display: block;
+    height: 100%;
+    background: var(--c-primary);
+    border-radius: 3px;
+    transition: width 0.2s ease;
+}
+
+.status-progress-label {
+    color: var(--c-text-2);
+    font-variant-numeric: tabular-nums;
+    white-space: nowrap;
+}
+
+.btn-xs {
+    height: 24px;
+    padding: 0 10px;
+    font-size: 11px;
+}
