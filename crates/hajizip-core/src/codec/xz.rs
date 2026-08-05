@@ -6,15 +6,15 @@
 //! feature is pulled in transitively by `sevenz-rust2` (feature unification),
 //! which the maintainer accepted (miri/sanitizer/fuzz coverage planned).
 
-use std::io::{Read, Write};
+use std::io::Read;
 
 use crate::codec::Codec;
-use crate::error::{Error, Result};
+use crate::error::Result;
 use crate::format::CodecFormat;
-use crate::model::Level;
 
-/// XZ stream magic bytes (RFC/`xz` format): `\xFD7zXZ\x00`.
-const XZ_MAGIC: &[u8] = &[0xFD, b'7', b'z', b'X', b'Z', 0x00];
+/// XZ stream magic bytes (RFC/`xz` format): `\xFD7zXZ\x00`. Shared with the
+/// nested-archive detection in `archive::mod`.
+pub(crate) const XZ_MAGIC: &[u8] = &[0xFD, b'7', b'z', b'X', b'Z', 0x00];
 
 /// The xz codec: wraps a reader in a stream that decompresses on the fly.
 ///
@@ -33,15 +33,6 @@ impl Codec for XzCodec {
         input: Box<dyn Read + Send + 'r>,
     ) -> Result<Box<dyn Read + Send + 'r>> {
         Ok(Box::new(lzma_rust2::XzReader::new(input, true)))
-    }
-
-    /// Compression is reserved for a future milestone (§4.9 of the design doc).
-    fn compress<'w>(
-        &self,
-        _output: Box<dyn Write + Send + 'w>,
-        _level: Level,
-    ) -> Result<Box<dyn Write + Send + 'w>> {
-        Err(Error::UnsupportedFeature("xz compression".into()))
     }
 }
 
@@ -75,6 +66,7 @@ mod tests {
     use std::io::Read;
 
     use super::*;
+    use crate::model::Level;
     use crate::registry::Registry;
 
     /// `xz -9` of `"Hello, hajizip!\n"` (xz embeds no mtime, so the output is

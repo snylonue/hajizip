@@ -94,10 +94,10 @@ pub(crate) fn detect_codepage(bytes: &[u8]) -> Option<Codepage> {
 ///
 /// The WHATWG decoders never fail: invalid byte sequences become U+FFFD
 /// (replacement character), which matches the "force decode" semantics of
-/// `Forced` and the Auto fallback.
+/// `Forced` and the Auto fallback. `Forced(Utf8)` is handled by the caller
+/// (`decode_filename`), so `Codepage::Utf8` never reaches this function.
 fn decode_codepage(raw: &[u8], cp: Codepage) -> Result<String> {
     let (decoded, _encoding, _had_errors) = match cp {
-        Codepage::Utf8 => return utf8(raw),
         Codepage::Gbk => encoding_rs::GBK.decode(raw),
         Codepage::ShiftJis => encoding_rs::SHIFT_JIS.decode(raw),
         Codepage::Big5 => encoding_rs::BIG5.decode(raw),
@@ -106,6 +106,7 @@ fn decode_codepage(raw: &[u8], cp: Codepage) -> Result<String> {
                 "CP437 decoding (deferred)".into(),
             ));
         }
+        Codepage::Utf8 => unreachable!("Forced(Utf8) is handled by decode_filename"),
     };
     Ok(decoded.into_owned())
 }

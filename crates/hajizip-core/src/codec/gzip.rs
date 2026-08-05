@@ -4,12 +4,15 @@
 //! reached through `flate2`'s `miniz_oxide` backend. See
 //! `local-doc/research-flate2.md` for the selection rationale.
 
-use std::io::{Read, Write};
+use std::io::Read;
 
 use crate::codec::Codec;
 use crate::error::Result;
 use crate::format::CodecFormat;
-use crate::model::Level;
+
+/// RFC 1952 gzip magic bytes (`0x1f 0x8b`). Shared with the nested-archive
+/// detection in `archive::mod`.
+pub(crate) const GZIP_MAGIC: &[u8] = &[0x1f, 0x8b];
 
 /// The gzip codec: wraps a reader in a stream that decompresses on the fly.
 ///
@@ -28,18 +31,6 @@ impl Codec for GzipCodec {
         input: Box<dyn Read + Send + 'r>,
     ) -> Result<Box<dyn Read + Send + 'r>> {
         Ok(Box::new(flate2::read::MultiGzDecoder::new(input)))
-    }
-
-    /// Compression is reserved for a future milestone (§4.9 of the design doc);
-    /// the default implementation reports it as unsupported.
-    fn compress<'w>(
-        &self,
-        _output: Box<dyn Write + Send + 'w>,
-        _level: Level,
-    ) -> Result<Box<dyn Write + Send + 'w>> {
-        Err(crate::error::Error::UnsupportedFeature(
-            "gzip compression".into(),
-        ))
     }
 }
 
@@ -61,7 +52,7 @@ impl CodecFormat for GzipFormat {
 
     fn matches(&self, head: &[u8], ext: Option<&str>) -> bool {
         // RFC 1952 magic: 0x1f 0x8b.
-        head.starts_with(&[0x1f, 0x8b]) || matches!(ext, Some("gz" | "gzip"))
+        head.starts_with(GZIP_MAGIC) || matches!(ext, Some("gz" | "gzip"))
     }
 
     fn build(&self) -> Box<dyn Codec> {
@@ -74,6 +65,7 @@ mod tests {
     use std::io::Read;
 
     use super::*;
+    use crate::model::Level;
     use crate::registry::Registry;
 
     /// A fixed gzip stream of `"Hello, hajizip!\n"`, produced by system

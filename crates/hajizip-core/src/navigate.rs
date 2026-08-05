@@ -156,10 +156,11 @@ enum Owner<'a> {
 
 impl Owner<'_> {
     fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        match self {
-            Owner::Borrowed(a) => a.open_nested(entry, opts),
-            Owner::Owned(a) => a.open_nested(entry, opts),
-        }
+        let archive: &dyn Archive = match self {
+            Owner::Borrowed(a) => *a,
+            Owner::Owned(a) => a.as_ref(),
+        };
+        archive.open_nested(entry, opts)
     }
 }
 

@@ -45,6 +45,10 @@ pub struct SafetyLimits {
     /// Maximum number of entries processed.
     pub max_entries: u64,
     /// Maximum nested-archive depth.
+    ///
+    /// Reserved for recursive extraction: `ExtractEngine` does not recurse
+    /// into nested archives today (the walk's own limit is
+    /// `WalkOptions::max_depth`).
     pub max_depth: usize,
 }
 

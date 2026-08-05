@@ -21,6 +21,9 @@ pub enum NodeKind {
 }
 
 /// A compression level. Interpretation is codec-specific.
+///
+/// Reserved for the future write milestone: compression is not implemented
+/// yet (`Codec::compress` defaults to unsupported).
 #[derive(Debug, Clone, Copy)]
 pub struct Level(pub u32);
 
@@ -73,6 +76,24 @@ impl EntryPath {
     pub fn as_str(&self) -> &str {
         &self.0
     }
+
+    /// The parent directory path, or `None` for a top-level entry.
+    ///
+    /// The parent of a validated path is always valid; `None` is returned
+    /// only for entries with no `/` separator.
+    pub fn parent(&self) -> Option<EntryPath> {
+        self.0.rsplit_once('/').and_then(|(p, _)| Self::new(p).ok())
+    }
+
+    /// Whether `self` is `ancestor` itself or a descendant of it
+    /// (`a/b/c.txt` is under `a`, not under `a/b.txt`).
+    pub fn is_under(&self, ancestor: &EntryPath) -> bool {
+        self.0 == ancestor.0
+            || self
+                .0
+                .strip_prefix(ancestor.0.as_str())
+                .is_some_and(|rest| rest.starts_with('/'))
+    }
 }
 
 impl std::fmt::Display for EntryPath {
@@ -100,6 +121,27 @@ fn normalize(raw: &str) -> Result<String> {
         return Err(Error::InvalidPath(format!("no valid component in {raw:?}")));
     }
     Ok(out.join("/"))
+}
+
+impl EntryMeta {
+    /// A directory entry with no size/checksum metadata.
+    ///
+    /// Used for synthetic directories (the archive root, and directories
+    /// implied by path prefixes in [`crate::archive::child_entries`]).
+    pub fn dir(path: EntryPath, raw_name: Vec<u8>) -> Self {
+        Self {
+            path,
+            raw_name,
+            kind: NodeKind::Dir,
+            uncompressed_size: None,
+            compressed_size: None,
+            mtime: None,
+            mode: None,
+            crc: None,
+            encrypted: false,
+            comment: None,
+        }
+    }
 }
 
 /// Metadata describing a single archive entry.
