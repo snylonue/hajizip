@@ -234,6 +234,8 @@ struct FileRowView {
     /// Type icon for the NAME column plus its tint class.
     type_icon: Icon,
     type_class: &'static str,
+    /// Whether this row is a directory (bold name to distinguish types).
+    is_dir: bool,
 }
 
 /// Right file list: children of the current focus directory.
@@ -271,6 +273,7 @@ pub fn FileList(
                 time: viewmodel::time_label(entry.mtime),
                 path,
                 is_file: entry.kind == NodeKind::File,
+                is_dir: entry.kind == NodeKind::Dir,
                 type_icon,
                 type_class,
             }
@@ -332,7 +335,13 @@ fn render_file_row(
     let preview_path = path.clone();
     let is_file = row.is_file;
     let row_class = if row.selected {
-        "file-row file-row-selected"
+        if row.is_dir {
+            "file-row file-row-selected file-row-dir"
+        } else {
+            "file-row file-row-selected"
+        }
+    } else if row.is_dir {
+        "file-row file-row-dir"
     } else {
         "file-row"
     };

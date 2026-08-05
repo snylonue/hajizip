@@ -28,6 +28,7 @@
     /* Interactive states */
     --c-hover: #f1f5f9;
     --c-selected: #eff6ff;
+    --c-selected-hover: #e0edff;
     --c-selected-border: #bfdbfe;
 
     /* Semantic */

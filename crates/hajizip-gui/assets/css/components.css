@@ -185,10 +185,13 @@
     font-variant-numeric: tabular-nums;
 }
 
-.filelist td.col-type { color: var(--c-text-3); font-size: 12px; }
-.filelist td.col-modified { color: var(--c-text-3); font-size: 12px; }
+.filelist td.col-type { color: var(--c-text-2); font-size: 12px; }
+.filelist td.col-modified { color: var(--c-text-2); font-size: 12px; }
 .filelist td.col-lock { text-align: center; }
-.filelist td.col-name { font-weight: 500; }
+.filelist td.col-name { font-weight: 400; }
+
+/* Directory names are bold to distinguish them from files at a glance. */
+.filelist tr.file-row-dir td.col-name { font-weight: 600; }
 
 .filelist tr.file-row {
     cursor: default;
@@ -197,8 +200,14 @@
 
 .filelist tr.file-row:hover { background: var(--c-hover); }
 
+/* Selected row: accent-tinted fill plus a 2px accent bar on the left edge
+   (inset shadow on the first cell; box-shadow on <tr> is unreliable). */
 .filelist tr.file-row-selected { background: var(--c-selected) !important; }
+.filelist tr.file-row-selected:hover { background: var(--c-selected-hover); }
 .filelist tr.file-row-selected td { border-bottom-color: var(--c-selected-border); }
+.filelist tr.file-row-selected td:first-child {
+    box-shadow: inset 3px 0 0 var(--c-primary);
+}
 
 /* Empty / no-match row */
 .filelist td.no-match {
