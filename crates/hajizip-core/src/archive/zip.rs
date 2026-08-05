@@ -6,13 +6,12 @@
 //! crate's default zlib-rs backend.
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::io::{Read, Write};
+use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use crate::archive::{
-    Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, decode_name,
-    node_from_meta, open_nested_bytes, root_meta,
+    Archive, ArchiveAdapter, ArchiveState, Capabilities, NodeKind, OpenOptions, decode_name,
 };
 use crate::encoding::{Codepage, FilenameEncoding, detect_codepage};
 use crate::error::{Error, Result};
@@ -20,10 +19,11 @@ use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath};
 use crate::source::{ReadSeek, Source};
 
-/// Zip local-file-header magic (`PK\x03\x04`).
-const ZIP_LOCAL_HEADER: &[u8] = b"PK\x03\x04";
+/// Zip local-file-header magic (`PK\x03\x04`). Shared with the nested-archive
+/// detection in `archive::mod`.
+pub(crate) const ZIP_LOCAL_HEADER: &[u8] = b"PK\x03\x04";
 /// Zip end-of-central-directory magic (`PK\x05\x06`, empty archives).
-const ZIP_EMPTY_ARCHIVE: &[u8] = b"PK\x05\x06";
+pub(crate) const ZIP_EMPTY_ARCHIVE: &[u8] = b"PK\x05\x06";
 
 /// Format identity and detection for ZIP archives.
 pub struct ZipFormat;
@@ -50,18 +50,11 @@ impl ArchiveFormat for ZipFormat {
     fn open(&self, src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
         let reader = src.open()?;
         let inner = zip::ZipArchive::new(reader).map_err(map_zip_err)?;
-        Ok(Box::new(ZipArchive::new(inner, opts)?))
+        Ok(Box::new(ArchiveAdapter::new(
+            ZipArchiveInner::new(inner, opts)?,
+            "zip",
+        )))
     }
-}
-
-/// An open ZIP archive.
-///
-/// Metadata is snapshotted at open time so listing never touches the lock.
-/// The `zip` reader API needs `&mut self` and borrows the archive, which does
-/// not fit the `Archive` trait (`&self` + `Send + Sync`); an internal `Mutex`
-/// serializes access. Reading is safe to share across threads.
-pub struct ZipArchive {
-    inner: Arc<ZipArchiveInner>,
 }
 
 /// Shared state of an open zip archive.
@@ -72,7 +65,7 @@ struct ZipArchiveInner {
     any_encrypted: bool,
 }
 
-impl ZipArchive {
+impl ZipArchiveInner {
     /// Snapshot metadata and indexes from a parsed zip archive.
     fn new(archive: zip::ZipArchive<Box<dyn ReadSeek + Send>>, opts: &OpenOptions) -> Result<Self> {
         let mut archive = archive;
@@ -171,12 +164,10 @@ impl ZipArchive {
         }
 
         Ok(Self {
-            inner: Arc::new(ZipArchiveInner {
-                inner: Mutex::new(archive),
-                entries,
-                index_by_path,
-                any_encrypted,
-            }),
+            inner: Mutex::new(archive),
+            entries,
+            index_by_path,
+            any_encrypted,
         })
     }
 }
@@ -186,13 +177,6 @@ impl ZipArchiveInner {
     /// panic inside the lock cannot corrupt the archive for later calls).
     fn lock(&self) -> MutexGuard<'_, zip::ZipArchive<Box<dyn ReadSeek + Send>>> {
         self.inner.lock().unwrap_or_else(|e| e.into_inner())
-    }
-
-    fn index_of(&self, path: &EntryPath) -> Result<usize> {
-        self.index_by_path
-            .get(path)
-            .copied()
-            .ok_or_else(|| Error::CorruptArchive(format!("no such entry in zip: {path}")))
     }
 
     /// Run `f` with the decompressing reader of `meta` opened.
@@ -210,7 +194,9 @@ impl ZipArchiveInner {
                 meta.path
             )));
         }
-        let idx = self.index_of(&meta.path)?;
+        let idx = self
+            .index_of(&meta.path)
+            .ok_or_else(|| Error::CorruptArchive(format!("no such entry in zip: {}", meta.path)))?;
         if self.entries[idx].encrypted {
             return Err(Error::UnsupportedFeature("encrypted zip entries".into()));
         }
@@ -228,11 +214,6 @@ impl ZipArchiveInner {
         })?;
         Ok(buf)
     }
-
-    /// Stream a file entry into `sink`, returning the bytes written.
-    fn extract_to(&self, meta: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
-        self.with_file(meta, |file| Ok(std::io::copy(file, sink)?))
-    }
 }
 
 impl ArchiveState for ZipArchiveInner {
@@ -240,55 +221,25 @@ impl ArchiveState for ZipArchiveInner {
         &self.entries
     }
 
+    fn index_of(&self, path: &EntryPath) -> Option<usize> {
+        self.index_by_path.get(path).copied()
+    }
+
     fn read_entry_bytes(&self, meta: &EntryMeta) -> Result<Vec<u8>> {
         self.read_to_vec(meta)
     }
-}
 
-impl Archive for ZipArchive {
-    fn entries(&self) -> Result<Vec<EntryMeta>> {
-        Ok(self.inner.entries.clone())
-    }
-
-    fn root(&self) -> Result<NodeRef> {
-        Ok(Box::new(DirNode {
-            inner: self.inner.clone(),
-            path: None,
-            meta: root_meta(),
-        }))
-    }
-
-    fn node(&self, path: &EntryPath) -> Result<NodeRef> {
-        let idx = self.inner.index_of(path)?;
-        Ok(node_from_meta(
-            self.inner.clone(),
-            self.inner.entries[idx].clone(),
-        ))
-    }
-
-    fn reader<'s>(&'s self, entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
-        if entry.kind == NodeKind::Dir {
-            return Ok(Box::new(Cursor::new(Vec::new())));
-        }
-        Ok(Box::new(Cursor::new(self.inner.read_to_vec(entry)?)))
-    }
-
-    fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
-        if entry.kind == NodeKind::Dir {
+    fn extract_to(&self, meta: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
+        if meta.kind == NodeKind::Dir {
             return Ok(0);
         }
-        self.inner.extract_to(entry, sink)
-    }
-
-    fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        let bytes = self.inner.read_to_vec(entry)?;
-        open_nested_bytes(bytes, opts)
+        self.with_file(meta, |file| Ok(std::io::copy(file, sink)?))
     }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             random_access: true,
-            encrypted: self.inner.any_encrypted,
+            encrypted: self.any_encrypted,
             // M1: encrypted entries are not readable, so a password would not
             // help; `needs_password` stays false until M3 adds decryption.
             needs_password: false,

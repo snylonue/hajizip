@@ -3,7 +3,7 @@
 use std::io::Read;
 use std::sync::Arc;
 
-use crate::archive::{Archive, IN_MEMORY_OPEN_CAP, OpenOptions};
+use crate::archive::{Archive, OpenOptions};
 use crate::error::{Error, Result};
 use crate::format::{ArchiveFormat, CodecFormat};
 use crate::source::Source;
@@ -125,17 +125,7 @@ impl Registry {
         // Not a direct archive: try a registered codec and re-detect inside.
         if let Some(codec_fmt) = self.detect_codec(&head, ext.as_deref()) {
             let codec = codec_fmt.build();
-            let mut reader = codec.decompress(src.open()?)?;
-            let mut buf = Vec::new();
-            reader
-                .by_ref()
-                .take(IN_MEMORY_OPEN_CAP + 1)
-                .read_to_end(&mut buf)?;
-            if buf.len() as u64 > IN_MEMORY_OPEN_CAP {
-                return Err(Error::UnsupportedFeature(
-                    "decompressed archive exceeds in-memory open cap".into(),
-                ));
-            }
+            let buf = crate::archive::decompress_bounded(codec.as_ref(), src.open()?)?;
             let inner_head = &buf[..buf.len().min(SNIFF_BYTES)];
             if let Some(format) = self.detect_archive(inner_head, None) {
                 return format.open(Source::Memory(buf), opts);

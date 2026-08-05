@@ -23,34 +23,25 @@
 //! unrar can open. We surface it as `CorruptArchive` until upstream fixes it.
 
 use std::collections::{HashMap, HashSet};
-use std::io::{Cursor, Read, Write};
+use std::io::Write;
 use std::sync::{Arc, Mutex};
 use std::time::SystemTime;
 
 use crate::archive::{
-    Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, node_from_meta,
-    open_nested_bytes, root_meta,
+    Archive, ArchiveAdapter, ArchiveState, Capabilities, NodeKind, OpenOptions, SNIFF_ENTRY_CAP,
+    SOLID_SNIFF_ARCHIVE_CAP, decode_name_with_flag,
 };
-use crate::encoding::{FilenameEncoding, Utf8Flag, decode_filename};
+use crate::encoding::FilenameEncoding;
 use crate::error::{Error, Result};
 use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath, Secret};
 use crate::source::Source;
 
-/// RAR 1.5-4.x magic (`Rar!\x1a\x07\x00`, 7 bytes).
-const RAR15_SIGNATURE: &[u8] = b"Rar!\x1a\x07\x00";
+/// RAR 1.5-4.x magic (`Rar!\x1a\x07\x00`, 7 bytes). Shared with the
+/// nested-archive detection in `archive::mod`.
+pub(crate) const RAR15_SIGNATURE: &[u8] = b"Rar!\x1a\x07\x00";
 /// RAR 5+ magic (`Rar!\x1a\x07\x01\x00`, 8 bytes).
-const RAR50_SIGNATURE: &[u8] = b"Rar!\x1a\x07\x01\x00";
-
-/// Entries larger than this are never sniffed for nested-archive marking
-/// (they are practically never archives themselves).
-const SNIFF_ENTRY_CAP: u64 = 1024 * 1024;
-
-/// Solid archives larger than this are not sniffed at open time: reading any
-/// member of a solid chain decodes the whole chain, so eager marking would
-/// materialize the entire archive. Small solid archives are still sniffed
-/// with a single chain decode. Mirrors the 7z bounds.
-const SOLID_SNIFF_ARCHIVE_CAP: u64 = 8 * 1024 * 1024;
+pub(crate) const RAR50_SIGNATURE: &[u8] = b"Rar!\x1a\x07\x01\x00";
 
 /// Format identity and detection for RAR archives.
 pub struct RarFormat;
@@ -94,20 +85,18 @@ impl ArchiveFormat for RarFormat {
                 )
             }
         };
-        Ok(Box::new(RarArchive::open(archive, size, opts)?))
+        Ok(Box::new(ArchiveAdapter::new(
+            RarInner::open(archive, size, opts)?,
+            "rar",
+        )))
     }
 }
 
-/// An open RAR archive.
+/// Shared state of an open RAR archive.
 ///
 /// `rars`'s read API is `&self`-based (parsed index + on-demand member
 /// decode), so no internal lock is needed; metadata is snapshotted into
 /// `entries` at open time.
-pub struct RarArchive {
-    inner: Arc<RarInner>,
-}
-
-/// Shared state of an open RAR archive.
 struct RarInner {
     archive: rars::Archive,
     entries: Vec<EntryMeta>,
@@ -119,7 +108,7 @@ struct RarInner {
     password: Option<Secret>,
 }
 
-impl RarArchive {
+impl RarInner {
     /// Snapshot metadata and indexes from a parsed RAR archive.
     fn open(archive: rars::Archive, total_size: u64, opts: &OpenOptions) -> Result<Self> {
         // Concrete file references in member order (all families expose the
@@ -195,9 +184,7 @@ impl RarArchive {
             password,
         };
         inner.sniff_nested(total_size);
-        Ok(Self {
-            inner: Arc::new(inner),
-        })
+        Ok(inner)
     }
 }
 
@@ -432,59 +419,24 @@ impl ArchiveState for RarInner {
         &self.entries
     }
 
+    fn index_of(&self, path: &EntryPath) -> Option<usize> {
+        self.index_by_path.get(path).copied()
+    }
+
     fn read_entry_bytes(&self, meta: &EntryMeta) -> Result<Vec<u8>> {
         self.read_entry_bytes(meta)
     }
-}
 
-impl Archive for RarArchive {
-    fn entries(&self) -> Result<Vec<EntryMeta>> {
-        Ok(self.inner.entries.clone())
-    }
-
-    fn root(&self) -> Result<NodeRef> {
-        Ok(Box::new(DirNode {
-            inner: self.inner.clone(),
-            path: None,
-            meta: root_meta(),
-        }))
-    }
-
-    fn node(&self, path: &EntryPath) -> Result<NodeRef> {
-        let idx = self
-            .inner
-            .index_by_path
-            .get(path)
-            .copied()
-            .ok_or_else(|| Error::CorruptArchive(format!("no such entry in rar: {path}")))?;
-        Ok(node_from_meta(
-            self.inner.clone(),
-            self.inner.entries[idx].clone(),
-        ))
-    }
-
-    fn reader<'s>(&'s self, entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
-        if entry.kind == NodeKind::Dir {
-            return Ok(Box::new(Cursor::new(Vec::new())));
-        }
-        Ok(Box::new(Cursor::new(self.inner.read_entry_bytes(entry)?)))
-    }
-
-    fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
-        self.inner.extract_entry(entry, sink)
-    }
-
-    fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        let bytes = self.inner.read_entry_bytes(entry)?;
-        open_nested_bytes(bytes, opts)
+    fn extract_to(&self, meta: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
+        self.extract_entry(meta, sink)
     }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             // Solid archives must decode the whole chain to reach a member.
-            random_access: !self.inner.is_solid,
-            encrypted: self.inner.encrypted,
-            needs_password: self.inner.needs_password,
+            random_access: !self.is_solid,
+            encrypted: self.encrypted,
+            needs_password: self.needs_password,
             can_write: false,
         }
     }
@@ -591,13 +543,10 @@ fn rars_read_options(opts: &OpenOptions) -> rars::ArchiveReadOptions<'_> {
 ///
 /// RAR5 names are UTF-8 by spec, so a strict UTF-8 hint applies there; RAR4
 /// names have no specified encoding (older WinRAR wrote OEM codepages), so
-/// the `Auto` fallback (UTF-8, else configured codepage) applies.
+/// the `Auto` fallback (UTF-8, else configured codepage) applies. Shared
+/// decoding with a lossy fallback lives in [`decode_name_with_flag`].
 fn decode_entry_name(raw: &[u8], enc: FilenameEncoding, family: rars::ArchiveFamily) -> String {
-    let ut8_ok = family == rars::ArchiveFamily::Rar50Plus;
-    match decode_filename(raw, enc, Utf8Flag(ut8_ok)) {
-        Ok(s) => s,
-        Err(_) => String::from_utf8_lossy(raw).into_owned(),
-    }
+    decode_name_with_flag(raw, enc, family == rars::ArchiveFamily::Rar50Plus)
 }
 
 /// Convert a DOS/FAT timestamp (as stored by RAR file headers) to a

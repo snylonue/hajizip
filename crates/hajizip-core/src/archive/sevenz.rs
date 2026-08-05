@@ -14,35 +14,25 @@
 //! needed here (unlike zip/tar).
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Write};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::io::Write;
+use std::sync::{Mutex, MutexGuard};
 use std::time::SystemTime;
 
 use crate::archive::{
-    Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, node_from_meta,
-    open_nested_bytes, root_meta,
+    Archive, ArchiveAdapter, ArchiveState, Capabilities, NodeKind, OpenOptions, SNIFF_ENTRY_CAP,
+    SOLID_SNIFF_ARCHIVE_CAP,
 };
 use crate::error::{Error, Result};
 use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath};
 use crate::source::{ReadSeek, Source};
 
-/// 7z magic bytes: `7z` 0xBC 0xAF 0x27 0x1C.
-const SEVEN_Z_MAGIC: &[u8] = b"7z\xbc\xaf\x27\x1c";
+/// 7z magic bytes: `7z` 0xBC 0xAF 0x27 0x1C. Shared with the nested-archive
+/// detection in `archive::mod`.
+pub(crate) const SEVEN_Z_MAGIC: &[u8] = b"7z\xbc\xaf\x27\x1c";
 
 /// 7z AES-256-SHA256 coder method id (`EncoderMethod::ID_AES256_SHA256`).
 const AES256_SHA256_METHOD: &[u8] = &[0x06, 0xF1, 0x07, 0x01];
-
-/// Entries larger than this are never sniffed for nested-archive marking
-/// (they are practically never archives themselves, and reading them into
-/// memory just to sniff would be wasteful).
-const SNIFF_ENTRY_CAP: u64 = 1024 * 1024;
-
-/// Solid archives larger than this are not sniffed at open time: decoding a
-/// single entry in a solid block decodes the whole block, so eager marking
-/// would materialize the entire archive. Small solid archives are still
-/// sniffed so nested archives inside them are navigable.
-const SOLID_SNIFF_ARCHIVE_CAP: u64 = 8 * 1024 * 1024;
 
 /// Format identity and detection for 7z archives.
 pub struct SevenZipFormat;
@@ -66,20 +56,18 @@ impl ArchiveFormat for SevenZipFormat {
 
     fn open(&self, src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
         let reader = src.open()?;
-        Ok(Box::new(SevenZipArchive::open(reader, opts)?))
+        Ok(Box::new(ArchiveAdapter::new(
+            SevenZipInner::open(reader, opts)?,
+            "7z",
+        )))
     }
 }
 
-/// An open 7z archive.
+/// Shared state of an open 7z archive.
 ///
 /// The underlying `ArchiveReader` stays behind a `Mutex` (its read API is
 /// `&mut self`); entry metadata is snapshotted at open time so listing never
 /// touches the lock.
-pub struct SevenZipArchive {
-    inner: Arc<SevenZipInner>,
-}
-
-/// Shared state of an open 7z archive.
 struct SevenZipInner {
     src: Mutex<sevenz_rust2::ArchiveReader<Box<dyn ReadSeek + Send>>>,
     /// Entry metadata, in archive order (parallel to `names`).
@@ -92,7 +80,7 @@ struct SevenZipInner {
     needs_password: bool,
 }
 
-impl SevenZipArchive {
+impl SevenZipInner {
     /// Parse the header, snapshot metadata and build the reader.
     fn open(mut src: Box<dyn ReadSeek + Send>, opts: &OpenOptions) -> Result<Self> {
         let password = password_from_opts(opts);
@@ -184,15 +172,13 @@ impl SevenZipArchive {
         }
 
         Ok(Self {
-            inner: Arc::new(SevenZipInner {
-                src: Mutex::new(reader),
-                entries,
-                names,
-                by_path,
-                is_solid,
-                encrypted,
-                needs_password,
-            }),
+            src: Mutex::new(reader),
+            entries,
+            names,
+            by_path,
+            is_solid,
+            encrypted,
+            needs_password,
         })
     }
 }
@@ -225,62 +211,27 @@ impl ArchiveState for SevenZipInner {
         &self.entries
     }
 
+    fn index_of(&self, path: &EntryPath) -> Option<usize> {
+        self.by_path.get(path).copied()
+    }
+
     fn read_entry_bytes(&self, meta: &EntryMeta) -> Result<Vec<u8>> {
         SevenZipInner::read_entry_bytes(self, meta)
     }
-}
 
-impl Archive for SevenZipArchive {
-    fn entries(&self) -> Result<Vec<EntryMeta>> {
-        Ok(self.inner.entries.clone())
-    }
-
-    fn root(&self) -> Result<NodeRef> {
-        Ok(Box::new(DirNode {
-            inner: self.inner.clone(),
-            path: None,
-            meta: root_meta(),
-        }))
-    }
-
-    fn node(&self, path: &EntryPath) -> Result<NodeRef> {
-        let idx = self
-            .inner
-            .by_path
-            .get(path)
-            .copied()
-            .ok_or_else(|| Error::CorruptArchive(format!("no such entry in 7z: {path}")))?;
-        Ok(node_from_meta(
-            self.inner.clone(),
-            self.inner.entries[idx].clone(),
-        ))
-    }
-
-    fn reader<'s>(&'s self, entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
-        if entry.kind == NodeKind::Dir {
-            return Ok(Box::new(Cursor::new(Vec::new())));
-        }
-        Ok(Box::new(Cursor::new(self.inner.read_entry_bytes(entry)?)))
-    }
-
-    fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
-        let bytes = self.inner.read_entry_bytes(entry)?;
+    fn extract_to(&self, meta: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
+        let bytes = self.read_entry_bytes(meta)?;
         sink.write_all(&bytes)?;
         Ok(bytes.len() as u64)
-    }
-
-    fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        let bytes = self.inner.read_entry_bytes(entry)?;
-        open_nested_bytes(bytes, opts)
     }
 
     fn capabilities(&self) -> Capabilities {
         Capabilities {
             // Non-solid archives seek directly to an entry's block; solid
             // archives must decode the whole containing block.
-            random_access: !self.inner.is_solid,
-            encrypted: self.inner.encrypted,
-            needs_password: self.inner.needs_password,
+            random_access: !self.is_solid,
+            encrypted: self.encrypted,
+            needs_password: self.needs_password,
             can_write: false,
         }
     }

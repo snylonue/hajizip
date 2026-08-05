@@ -11,13 +11,12 @@
 //! being opened here (see `crate::registry::Registry::open_archive`).
 
 use std::collections::HashMap;
-use std::io::{Cursor, Read, Seek, Write};
-use std::sync::{Arc, Mutex, MutexGuard};
+use std::io::{Read, Seek, Write};
+use std::sync::{Mutex, MutexGuard};
 use std::time::{Duration, SystemTime};
 
 use crate::archive::{
-    Archive, ArchiveState, Capabilities, DirNode, NodeKind, NodeRef, OpenOptions, decode_name,
-    node_from_meta, open_nested_bytes, root_meta,
+    Archive, ArchiveAdapter, ArchiveState, Capabilities, NodeKind, OpenOptions, decode_name,
 };
 use crate::error::{Error, Result};
 use crate::format::ArchiveFormat;
@@ -46,20 +45,18 @@ impl ArchiveFormat for TarFormat {
 
     fn open(&self, src: Source, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
         let reader = src.open()?;
-        Ok(Box::new(TarArchive::open(reader, opts)?))
+        Ok(Box::new(ArchiveAdapter::new(
+            TarArchiveInner::open(reader, opts)?,
+            "tar",
+        )))
     }
 }
 
-/// An open TAR archive.
+/// Shared state of an open tar archive.
 ///
 /// The raw source stays behind a `Mutex` because random access mutates the
 /// shared seek cursor; entry metadata is snapshotted at open time so listing
 /// never touches the lock.
-pub struct TarArchive {
-    inner: Arc<TarArchiveInner>,
-}
-
-/// Shared state of an open tar archive.
 struct TarArchiveInner {
     src: Mutex<Box<dyn ReadSeek + Send>>,
     /// Entry metadata, in archive order (parallel to `records`).
@@ -75,7 +72,7 @@ struct TarRecord {
     size: u64,
 }
 
-impl TarArchive {
+impl TarArchiveInner {
     /// Scan the tar headers once and build the in-memory index.
     fn open(mut src: Box<dyn ReadSeek + Send>, opts: &OpenOptions) -> Result<Self> {
         src.seek(std::io::SeekFrom::Start(0))?;
@@ -143,12 +140,10 @@ impl TarArchive {
         }
 
         Ok(Self {
-            inner: Arc::new(TarArchiveInner {
-                src: Mutex::new(src),
-                entries,
-                records,
-                by_path,
-            }),
+            src: Mutex::new(src),
+            entries,
+            records,
+            by_path,
         })
     }
 }
@@ -173,6 +168,10 @@ impl ArchiveState for TarArchiveInner {
         &self.entries
     }
 
+    fn index_of(&self, path: &EntryPath) -> Option<usize> {
+        self.by_path.get(path).copied()
+    }
+
     fn read_entry_bytes(&self, meta: &EntryMeta) -> Result<Vec<u8>> {
         if meta.kind == NodeKind::Dir {
             return Ok(Vec::new());
@@ -184,54 +183,15 @@ impl ArchiveState for TarArchiveInner {
         guard.by_ref().take(size).read_to_end(&mut buf)?;
         Ok(buf)
     }
-}
 
-impl Archive for TarArchive {
-    fn entries(&self) -> Result<Vec<EntryMeta>> {
-        Ok(self.inner.entries.clone())
-    }
-
-    fn root(&self) -> Result<NodeRef> {
-        Ok(Box::new(DirNode {
-            inner: self.inner.clone(),
-            path: None,
-            meta: root_meta(),
-        }))
-    }
-
-    fn node(&self, path: &EntryPath) -> Result<NodeRef> {
-        let idx = self
-            .inner
-            .by_path
-            .get(path)
-            .copied()
-            .ok_or_else(|| Error::CorruptArchive(format!("no such entry in tar: {path}")))?;
-        Ok(node_from_meta(
-            self.inner.clone(),
-            self.inner.entries[idx].clone(),
-        ))
-    }
-
-    fn reader<'s>(&'s self, entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
-        if entry.kind == NodeKind::Dir {
-            return Ok(Box::new(Cursor::new(Vec::new())));
-        }
-        Ok(Box::new(Cursor::new(self.inner.read_entry_bytes(entry)?)))
-    }
-
-    fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
-        if entry.kind == NodeKind::Dir {
+    fn extract_to(&self, meta: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
+        if meta.kind == NodeKind::Dir {
             return Ok(0);
         }
-        let (pos, size) = self.inner.locate(entry)?;
-        let mut guard = self.inner.lock();
+        let (pos, size) = self.locate(meta)?;
+        let mut guard = self.lock();
         guard.seek(std::io::SeekFrom::Start(pos))?;
         Ok(std::io::copy(&mut guard.by_ref().take(size), sink)?)
-    }
-
-    fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
-        let bytes = self.inner.read_entry_bytes(entry)?;
-        open_nested_bytes(bytes, opts)
     }
 
     fn capabilities(&self) -> Capabilities {

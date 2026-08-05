@@ -11,7 +11,7 @@ use std::sync::Arc;
 
 use crate::codec::Codec;
 use crate::encoding::{FilenameEncoding, Utf8Flag, decode_filename};
-use crate::error::Result;
+use crate::error::{Error, Result};
 use crate::format::ArchiveFormat;
 use crate::model::{EntryMeta, EntryPath, NodeKind, Secret};
 use crate::source::Source;
@@ -22,6 +22,16 @@ use crate::source::Source;
 /// `open_nested_bytes` here and `Registry::open_archive`.
 pub(crate) const IN_MEMORY_OPEN_CAP: u64 = 512 * 1024 * 1024;
 
+/// Entries larger than this are never sniffed for nested-archive marking
+/// (they are practically never archives themselves). Shared by the 7z and
+/// RAR solid-sniff budgets.
+pub(crate) const SNIFF_ENTRY_CAP: u64 = 1024 * 1024;
+
+/// Solid archives larger than this are not sniffed at open time: decoding a
+/// single member decodes the whole solid chain, so eager marking would
+/// materialize the entire archive. Shared by the 7z and RAR sniff budgets.
+pub(crate) const SOLID_SNIFF_ARCHIVE_CAP: u64 = 8 * 1024 * 1024;
+
 /// Whether the head bytes look like a (POSIX/GNU) tar archive: `ustar` magic
 /// at offset 257.
 pub(crate) fn looks_like_tar(head: &[u8]) -> bool {
@@ -30,17 +40,18 @@ pub(crate) fn looks_like_tar(head: &[u8]) -> bool {
 
 /// Whether the head bytes look like a nested archive (zip, 7z, tar, gzip,
 /// xz or rar). Used to mark entries as [`NodeKind::Archive`] so walk/Navigator
-/// can recurse into them.
+/// can recurse into them. Magic bytes come from the per-format modules (the
+/// single source for each format's detection).
 pub(crate) fn looks_like_nested_archive(head: &[u8]) -> bool {
-    head.starts_with(b"PK\x03\x04")
-        || head.starts_with(b"PK\x05\x06")
-        || head.starts_with(b"7z\xbc\xaf\x27\x1c")
+    head.starts_with(crate::archive::zip::ZIP_LOCAL_HEADER)
+        || head.starts_with(crate::archive::zip::ZIP_EMPTY_ARCHIVE)
+        || head.starts_with(crate::archive::sevenz::SEVEN_Z_MAGIC)
         || looks_like_tar(head)
-        || head.starts_with(&[0x1f, 0x8b])
-        || head.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00])
+        || head.starts_with(crate::codec::gzip::GZIP_MAGIC)
+        || head.starts_with(crate::codec::xz::XZ_MAGIC)
         // RAR 1.5-4.x (7 bytes) and RAR 5+ (8 bytes) signatures.
-        || head.starts_with(b"Rar!\x1a\x07\x00")
-        || head.starts_with(b"Rar!\x1a\x07\x01\x00")
+        || head.starts_with(crate::archive::rar::RAR15_SIGNATURE)
+        || head.starts_with(crate::archive::rar::RAR50_SIGNATURE)
 }
 
 /// Options controlling how an archive is opened.
@@ -62,6 +73,9 @@ pub struct Capabilities {
     /// Whether a password is required to proceed.
     pub needs_password: bool,
     /// Whether writing/creation is supported.
+    ///
+    /// Reserved: writing is not implemented yet, so every format reports
+    /// `false` and no front-end reads this field today.
     pub can_write: bool,
 }
 
@@ -124,7 +138,8 @@ pub trait Archive: Send + Sync {
     fn capabilities(&self) -> Capabilities;
 }
 
-/// State shared by an open archive that backs [`DirNode`]/[`FileNode`].
+/// State shared by an open archive that backs [`DirNode`]/[`FileNode`] and
+/// the uniform [`ArchiveAdapter`].
 ///
 /// Implementations are the per-format inner state structs (e.g. zip's
 /// `ZipArchiveInner`); nodes hold an `Arc` to it so `NodeRef` stays `'static`.
@@ -132,8 +147,17 @@ pub(crate) trait ArchiveState: Send + Sync {
     /// Flat entry listing.
     fn entries(&self) -> &[EntryMeta];
 
+    /// Index of the entry with the given path, if present.
+    fn index_of(&self, path: &EntryPath) -> Option<usize>;
+
     /// Read a file entry fully into memory (preview / nested-open path).
     fn read_entry_bytes(&self, meta: &EntryMeta) -> Result<Vec<u8>>;
+
+    /// Stream an entry's decompressed bytes into `sink`.
+    fn extract_to(&self, meta: &EntryMeta, sink: &mut dyn Write) -> Result<u64>;
+
+    /// Capabilities of the archive.
+    fn capabilities(&self) -> Capabilities;
 }
 
 /// A directory node in an archive tree (or the root when `path` is `None`).
@@ -214,6 +238,73 @@ pub(crate) fn node_from_meta<I: ArchiveState + 'static>(inner: Arc<I>, meta: Ent
     }
 }
 
+/// A concrete archive implemented uniformly over per-format inner state.
+///
+/// Every format's `open` returns one of these: the whole [`Archive`] surface
+/// is provided here on top of [`ArchiveState`], so the per-format modules
+/// only implement data access (listing, lookup, reads, extraction) and
+/// capabilities — previously each format duplicated the same five methods
+/// (see `local-doc/review-current-2026-08-05.md` §1).
+pub(crate) struct ArchiveAdapter<I: ArchiveState + 'static> {
+    inner: Arc<I>,
+    /// Format name used in lookup error messages (e.g. "zip").
+    label: &'static str,
+}
+
+impl<I: ArchiveState + 'static> ArchiveAdapter<I> {
+    /// Wrap per-format inner state; `label` names the format in errors.
+    pub(crate) fn new(inner: I, label: &'static str) -> Self {
+        Self {
+            inner: Arc::new(inner),
+            label,
+        }
+    }
+}
+
+impl<I: ArchiveState + 'static> Archive for ArchiveAdapter<I> {
+    fn entries(&self) -> Result<Vec<EntryMeta>> {
+        Ok(self.inner.entries().to_vec())
+    }
+
+    fn root(&self) -> Result<NodeRef> {
+        Ok(Box::new(DirNode {
+            inner: self.inner.clone(),
+            path: None,
+            meta: root_meta(),
+        }))
+    }
+
+    fn node(&self, path: &EntryPath) -> Result<NodeRef> {
+        let idx = self.inner.index_of(path).ok_or_else(|| {
+            Error::CorruptArchive(format!("no such entry in {}: {path}", self.label))
+        })?;
+        Ok(node_from_meta(
+            self.inner.clone(),
+            self.inner.entries()[idx].clone(),
+        ))
+    }
+
+    fn reader<'s>(&'s self, entry: &EntryMeta) -> Result<Box<dyn Read + Send + 's>> {
+        if entry.kind == NodeKind::Dir {
+            return Ok(Box::new(Cursor::new(Vec::new())));
+        }
+        Ok(Box::new(Cursor::new(self.inner.read_entry_bytes(entry)?)))
+    }
+
+    fn extract_to(&self, entry: &EntryMeta, sink: &mut dyn Write) -> Result<u64> {
+        self.inner.extract_to(entry, sink)
+    }
+
+    fn open_nested(&self, entry: &EntryMeta, opts: &OpenOptions) -> Result<Box<dyn Archive>> {
+        let bytes = self.inner.read_entry_bytes(entry)?;
+        open_nested_bytes(bytes, opts)
+    }
+
+    fn capabilities(&self) -> Capabilities {
+        self.inner.capabilities()
+    }
+}
+
 /// Open a nested archive from raw entry bytes, self-detecting the format.
 ///
 /// This is the crate-internal dispatcher used by every format's
@@ -229,18 +320,8 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
     }
     // Compressed single-stream: decompress and expect tar inside
     // (e.g. tar.gz / tar.xz inside an archive).
-    if bytes.starts_with(&[0x1f, 0x8b]) {
-        let mut reader = crate::codec::gzip::GzipCodec.decompress(Box::new(bytes.as_slice()))?;
-        let mut inner = Vec::new();
-        reader
-            .by_ref()
-            .take(IN_MEMORY_OPEN_CAP + 1)
-            .read_to_end(&mut inner)?;
-        if inner.len() as u64 > IN_MEMORY_OPEN_CAP {
-            return Err(crate::error::Error::UnsupportedFeature(
-                "nested archive exceeds in-memory open cap".into(),
-            ));
-        }
+    if bytes.starts_with(crate::codec::gzip::GZIP_MAGIC) {
+        let inner = decompress_bounded(&crate::codec::gzip::GzipCodec, Box::new(bytes.as_slice()))?;
         if looks_like_tar(&inner) {
             return tar::TarFormat.open(Source::Memory(inner), opts);
         }
@@ -248,18 +329,8 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
             "decompressed nested entry is not a recognized archive".into(),
         ));
     }
-    if bytes.starts_with(&[0xfd, b'7', b'z', b'X', b'Z', 0x00]) {
-        let mut reader = crate::codec::xz::XzCodec.decompress(Box::new(bytes.as_slice()))?;
-        let mut inner = Vec::new();
-        reader
-            .by_ref()
-            .take(IN_MEMORY_OPEN_CAP + 1)
-            .read_to_end(&mut inner)?;
-        if inner.len() as u64 > IN_MEMORY_OPEN_CAP {
-            return Err(crate::error::Error::UnsupportedFeature(
-                "nested archive exceeds in-memory open cap".into(),
-            ));
-        }
+    if bytes.starts_with(crate::codec::xz::XZ_MAGIC) {
+        let inner = decompress_bounded(&crate::codec::xz::XzCodec, Box::new(bytes.as_slice()))?;
         if looks_like_tar(&inner) {
             return tar::TarFormat.open(Source::Memory(inner), opts);
         }
@@ -270,13 +341,17 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
     if looks_like_tar(&bytes) {
         return tar::TarFormat.open(Source::Memory(bytes), opts);
     }
-    if bytes.starts_with(b"PK\x03\x04") || bytes.starts_with(b"PK\x05\x06") {
+    if bytes.starts_with(crate::archive::zip::ZIP_LOCAL_HEADER)
+        || bytes.starts_with(crate::archive::zip::ZIP_EMPTY_ARCHIVE)
+    {
         return zip::ZipFormat.open(Source::Memory(bytes), opts);
     }
-    if bytes.starts_with(b"7z\xbc\xaf\x27\x1c") {
+    if bytes.starts_with(crate::archive::sevenz::SEVEN_Z_MAGIC) {
         return sevenz::SevenZipFormat.open(Source::Memory(bytes), opts);
     }
-    if bytes.starts_with(b"Rar!\x1a\x07\x00") || bytes.starts_with(b"Rar!\x1a\x07\x01\x00") {
+    if bytes.starts_with(crate::archive::rar::RAR15_SIGNATURE)
+        || bytes.starts_with(crate::archive::rar::RAR50_SIGNATURE)
+    {
         return rar::RarFormat.open(Source::Memory(bytes), opts);
     }
     Err(crate::error::Error::UnsupportedFormat(
@@ -284,21 +359,36 @@ pub(crate) fn open_nested_bytes(bytes: Vec<u8>, opts: &OpenOptions) -> Result<Bo
     ))
 }
 
+/// Decompress `input` fully into memory, bounded by [`IN_MEMORY_OPEN_CAP`].
+///
+/// Used when a compressed stream must be materialized before its inner
+/// format can be detected (nested archives, codec-chained opens). Larger
+/// streams are rejected; spill-to-temp-file is a future coordination point.
+pub(crate) fn decompress_bounded(
+    codec: &dyn Codec,
+    input: Box<dyn Read + Send + '_>,
+) -> Result<Vec<u8>> {
+    let mut reader = codec.decompress(input)?;
+    let mut buf = Vec::new();
+    reader
+        .by_ref()
+        .take(IN_MEMORY_OPEN_CAP + 1)
+        .read_to_end(&mut buf)?;
+    if buf.len() as u64 > IN_MEMORY_OPEN_CAP {
+        return Err(crate::error::Error::UnsupportedFeature(
+            "decompressed content exceeds in-memory open cap".into(),
+        ));
+    }
+    Ok(buf)
+}
+
 /// Synthetic root-node metadata. The archive root has no real entry; its path
 /// is a reserved placeholder that never appears in listings.
 pub(crate) fn root_meta() -> EntryMeta {
-    EntryMeta {
-        path: EntryPath::new("<archive root>").expect("reserved root path is valid"),
-        raw_name: b"<archive root>".to_vec(),
-        kind: NodeKind::Dir,
-        uncompressed_size: None,
-        compressed_size: None,
-        mtime: None,
-        mode: None,
-        crc: None,
-        encrypted: false,
-        comment: None,
-    }
+    EntryMeta::dir(
+        EntryPath::new("<archive root>").expect("reserved root path is valid"),
+        b"<archive root>".to_vec(),
+    )
 }
 
 /// Direct children of `focus` (`None` = root) within the flat listing.
@@ -339,18 +429,10 @@ pub fn child_entries(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<En
         };
         by_name.entry(first.to_string()).or_insert_with(|| {
             let full = format!("{prefix}{first}");
-            EntryMeta {
-                path: EntryPath::new(&full).expect("implied dir path is valid"),
-                raw_name: first.as_bytes().to_vec(),
-                kind: NodeKind::Dir,
-                uncompressed_size: None,
-                compressed_size: None,
-                mtime: None,
-                mode: None,
-                crc: None,
-                encrypted: false,
-                comment: None,
-            }
+            EntryMeta::dir(
+                EntryPath::new(&full).expect("implied dir path is valid"),
+                first.as_bytes().to_vec(),
+            )
         });
     }
 
@@ -367,12 +449,20 @@ pub fn child_entries(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<En
 
 /// Decode a raw entry name for listing.
 ///
-/// Legacy codepages (GBK, Shift-JIS, ...) are not implemented yet (M3): names
-/// that fail decoding fall back to lossy UTF-8 so the archive still lists.
-/// The raw bytes are preserved in [`EntryMeta::raw_name`] for later
-/// re-decoding once the encoding milestone lands.
+/// Names that fail strict decoding fall back to lossy UTF-8 so the archive
+/// still lists; the raw bytes are preserved in [`EntryMeta::raw_name`] for
+/// re-decoding. `Auto` performs codepage detection at the archive level (see
+/// [`crate::encoding`]); other formats (tar...) have no declared encoding, so
+/// no detection is attempted for them.
 pub(crate) fn decode_name(raw: &[u8], enc: FilenameEncoding) -> String {
-    match decode_filename(raw, enc, Utf8Flag(false)) {
+    decode_name_with_flag(raw, enc, false)
+}
+
+/// [`decode_name`] with an explicit UTF-8 hint (e.g. RAR 5 names are UTF-8 by
+/// spec, so a strict hint applies there). Shared by the format readers that
+/// need a per-family hint.
+pub(crate) fn decode_name_with_flag(raw: &[u8], enc: FilenameEncoding, utf8: bool) -> String {
+    match decode_filename(raw, enc, Utf8Flag(utf8)) {
         Ok(s) => s,
         Err(_) => String::from_utf8_lossy(raw).into_owned(),
     }
