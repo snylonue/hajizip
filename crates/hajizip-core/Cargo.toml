@@ -35,4 +35,10 @@ lzma-rust2 = { version = "0.16", default-features = false, features = ["std", "x
 # C-FFI exception (decode-only) per maintainer; bzip2/deflate/compress are
 # deliberately not enabled.
 sevenz-rust2 = { version = "0.21", default-features = false, features = ["ppmd", "aes256", "zstd"] }
+# RAR archive reader (see local-doc/research-rar.md). Coverage: RE~^ → RAR
+# 1.3/1.4 → RAR 1.5-4.x (PPMd + encryption) → RAR5 → RAR7; workspace-level 0
+# unsafe. Default features only: the `parallel` (rayon) and `fast`
+# (portable_simd) features are deliberately not enabled to keep the surface
+# minimal.
+rars = "0.4"
 
