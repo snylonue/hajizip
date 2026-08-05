@@ -6,13 +6,16 @@
 #![windows_subsystem = "windows"]
 #![forbid(unsafe_code)]
 
+mod actions;
 mod app;
 mod config;
 mod controller;
+mod events;
 mod icons;
 mod platform;
 mod registry;
 mod ui;
+mod view;
 mod viewmodel;
 
 use dioxus::desktop::{Config, WindowBuilder};
