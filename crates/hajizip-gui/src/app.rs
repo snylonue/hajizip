@@ -27,7 +27,9 @@ use crate::controller::{
 };
 use crate::icons::{Icon, IconView};
 use crate::registry::compose_registry;
-use crate::ui::{Breadcrumb, CSS, FileList, PasswordDialog, SettingsPanel, TreeView};
+use crate::ui::{
+    AboutModal, Breadcrumb, CSS, FileList, OverflowMenu, PasswordDialog, SettingsPanel, TreeView,
+};
 use crate::viewmodel;
 
 /// The application root component.
@@ -49,7 +51,11 @@ pub fn App() -> Element {
     let mut password_prompt = use_signal(|| Option::<PasswordPrompt>::None);
     let mut progress = use_signal(|| Option::<ProgressUpdate>::None);
     let mut settings_open = use_signal(|| false);
+    let mut about_open = use_signal(|| false);
     let mut config = use_signal(AppConfig::load);
+
+    // Window handle: dynamic title on open, close for the Exit action.
+    let window = dioxus::desktop::use_window();
 
     // Esc closes any open modal (settings / password). Window-level keyboard
     // events arrive through wry; the handler runs on the main thread.
@@ -61,6 +67,7 @@ pub fn App() -> Element {
             && key.physical_key == KeyCode::Escape
         {
             settings_open.set(false);
+            about_open.set(false);
             password_prompt.set(None);
         }
     });
@@ -70,7 +77,7 @@ pub fn App() -> Element {
         let registry = Arc::new(compose_registry());
         let (handle, mut events) = spawn_controller(registry, AppConfig::load());
         // Window handle for the dynamic title (archive name — hajizip).
-        let window = dioxus::desktop::use_window();
+        let window = window.clone();
 
         // Ask-overwrite dialog worker: conflicts are forwarded over an mpsc
         // queue and answered in order by a dedicated thread (rfd blocks its
@@ -452,6 +459,11 @@ pub fn App() -> Element {
                         title: "Settings",
                         IconView { icon: Icon::Settings, size: 16 }
                     }
+                    OverflowMenu {
+                        on_settings: move |_| settings_open.set(true),
+                        on_about: move |_| about_open.set(true),
+                        on_exit: move |_| window.close(),
+                    }
                 }
                 div { class: "header-spacer" }
             }
@@ -585,6 +597,12 @@ pub fn App() -> Element {
                     on_mtime: set_mtime,
                     on_defaults: restore_defaults,
                     on_close: move |_| settings_open.set(false),
+                }
+            }
+
+            if *about_open.read() {
+                AboutModal {
+                    on_close: move |_| about_open.set(false),
                 }
             }
         }

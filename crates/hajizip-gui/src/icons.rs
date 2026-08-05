@@ -51,6 +51,8 @@ pub enum Icon {
     ArrowUp,
     /// Sort indicator (descending).
     ArrowDown,
+    /// Overflow menu ("⋯").
+    More,
 }
 
 /// Path data for [`Icon`], in the order they should be drawn.
@@ -120,6 +122,7 @@ fn icon_paths(icon: Icon) -> &'static [&'static str] {
         X => &["M18 6 6 18", "m6 6 12 12"],
         ArrowUp => &["m5 12 7-7 7 7", "M12 19V5"],
         ArrowDown => &["M12 5v14", "m19 12-7 7-7-7"],
+        More => &["M5 12h.01", "M12 12h.01", "M19 12h.01"],
     }
 }
 

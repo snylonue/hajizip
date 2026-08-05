@@ -623,6 +623,105 @@ fn overwrite_hint(p: OverwritePolicy) -> &'static str {
 }
 
 // ---------------------------------------------------------------------------
+// Overflow menu (⋯) and About dialog
+// ---------------------------------------------------------------------------
+
+/// Header overflow menu: Settings / About / Exit.
+///
+/// Small desktop tools don't need a native menu bar; the three rarely-used
+/// actions live behind this button instead (see `review-ui-v2.md` §8).
+#[component]
+pub fn OverflowMenu(
+    /// Called when the user picks Settings.
+    on_settings: EventHandler<()>,
+    /// Called when the user picks About.
+    on_about: EventHandler<()>,
+    /// Called when the user picks Exit (the window is closed by the caller).
+    on_exit: EventHandler<()>,
+) -> Element {
+    let mut open = use_signal(|| false);
+    rsx! {
+        div { class: "overflow",
+            button {
+                class: "btn btn-icon",
+                onclick: move |_| {
+                    let next = !*open.read();
+                    open.set(next);
+                },
+                title: "Menu",
+                IconView { icon: Icon::More, size: 16 }
+            }
+            if *open.read() {
+                // Transparent backdrop: clicking anywhere outside closes the
+                // menu (also swallows the click so it doesn't reach the UI).
+                div { class: "overflow-backdrop", onclick: move |_| open.set(false) }
+                div { class: "overflow-menu",
+                    button {
+                        class: "overflow-item",
+                        onclick: move |_| {
+                            open.set(false);
+                            on_settings.call(());
+                        },
+                        "Settings"
+                    }
+                    button {
+                        class: "overflow-item",
+                        onclick: move |_| {
+                            open.set(false);
+                            on_about.call(());
+                        },
+                        "About"
+                    }
+                    button {
+                        class: "overflow-item overflow-item-danger",
+                        onclick: move |_| {
+                            open.set(false);
+                            on_exit.call(());
+                        },
+                        "Exit"
+                    }
+                }
+            }
+        }
+    }
+}
+
+/// About dialog: name, version, and a one-line description.
+#[component]
+pub fn AboutModal(on_close: EventHandler<()>) -> Element {
+    let version = env!("CARGO_PKG_VERSION");
+    rsx! {
+        div { class: "modal-overlay",
+            div { class: "modal-card modal-card-sm",
+                div { class: "modal-card-head",
+                    h3 { class: "modal-title",
+                        IconView { icon: Icon::Package, size: 16, class: Some("title-icon".to_string()) }
+                        "About hajizip"
+                    }
+                    button {
+                        class: "btn btn-icon",
+                        onclick: move |_| on_close.call(()),
+                        title: "Close (Esc)",
+                        IconView { icon: Icon::X, size: 16 }
+                    }
+                }
+                p { class: "modal-desc",
+                    "hajizip "
+                    strong { "{version}" }
+                    " — a memory-safe archive manager written in Rust."
+                }
+                p { class: "modal-desc",
+                    "Supports ZIP, TAR, 7z, RAR (extraction) with gzip and xz codecs."
+                }
+                div { class: "modal-actions",
+                    button { class: "btn", onclick: move |_| on_close.call(()), "Done" }
+                }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Encoding / overwrite helpers
 // ---------------------------------------------------------------------------
 

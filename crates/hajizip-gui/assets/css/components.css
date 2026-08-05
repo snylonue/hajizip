@@ -261,6 +261,59 @@
 
 .icon-lock { color: var(--c-warning); }
 
+/* --- Overflow menu (⋯) --------------------------------------------------- */
+.overflow {
+    position: relative;
+}
+
+/* Click-through backdrop: closes the menu and swallows the click. */
+.overflow-backdrop {
+    position: fixed;
+    inset: 0;
+    z-index: 90;
+}
+
+.overflow-menu {
+    position: absolute;
+    top: calc(100% + 4px);
+    right: 0;
+    z-index: 91;
+    min-width: 160px;
+    background: var(--c-surface);
+    border: 1px solid var(--c-border);
+    border-radius: var(--radius);
+    box-shadow: var(--shadow-lg);
+    padding: 4px;
+    animation: modal-in 0.12s ease-out;
+}
+
+.overflow-item {
+    display: block;
+    width: 100%;
+    text-align: left;
+    border: none;
+    background: none;
+    font: inherit;
+    font-size: 13px;
+    color: var(--c-text);
+    padding: 7px 10px;
+    border-radius: 4px;
+    cursor: pointer;
+    transition: background 0.1s ease;
+}
+
+.overflow-item:hover { background: var(--c-hover); }
+
+.overflow-item-danger {
+    color: var(--c-danger);
+    border-top: 1px solid var(--c-border);
+    border-radius: 0 0 4px 4px;
+    margin-top: 4px;
+    padding-top: 8px;
+}
+
+.overflow-item-danger:hover { background: var(--c-danger-bg); }
+
 /* --- Modal overlay & card ------------------------------------------------ */
 .modal-overlay {
     position: fixed;
