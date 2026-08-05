@@ -13,14 +13,15 @@ use hajizip_core::{EntryMeta, EntryPath, NodeKind};
 use crate::icons::Icon;
 
 /// A row of the (left) tree panel: the entry plus its indentation depth.
+///
+/// Only directory nodes are shown (files live in the right-hand list), so
+/// every row is expandable.
 #[derive(Debug, Clone)]
 pub struct TreeRow {
     /// Indentation depth (0 = top level).
     pub depth: usize,
     /// The entry displayed on this row.
     pub entry: EntryMeta,
-    /// Whether this row is a directory that can be expanded.
-    pub is_dir: bool,
 }
 
 /// Direct children of `focus` within `entries` (None = archive root).
@@ -154,7 +155,6 @@ pub fn tree_rows(entries: &[EntryMeta], expanded: &HashSet<EntryPath>) -> Vec<Tr
             rows.push(TreeRow {
                 depth,
                 entry: child.clone(),
-                is_dir: true,
             });
             if expanded.contains(&child.path) {
                 stack.push((depth + 1, Some(child.path.clone())));
@@ -427,7 +427,7 @@ mod tests {
         // Only directory rows at the root (files are filtered out).
         assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].depth, 0);
-        assert!(rows.iter().all(|r| r.is_dir));
+        assert!(rows.iter().all(|r| r.entry.kind == NodeKind::Dir));
         assert!(rows.iter().any(|r| r.entry.path.as_str() == "dir"));
         assert!(rows.iter().any(|r| r.entry.path.as_str() == "empty"));
         assert!(!rows.iter().any(|r| r.entry.path.as_str() == "a.txt"));

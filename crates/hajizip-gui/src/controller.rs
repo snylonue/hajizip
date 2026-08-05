@@ -412,7 +412,7 @@ impl ControllerCore {
             None if top
                 .entries
                 .iter()
-                .any(|e| e.path.as_str().starts_with(&format!("{}/", path.as_str()))) =>
+                .any(|e| e.path.is_under(path) && e.path != *path) =>
             {
                 NodeKind::Dir
             }
@@ -494,12 +494,8 @@ impl ControllerCore {
                 // Move to the parent directory within the same archive. The
                 // parent of a validated `EntryPath` is always valid; handle the
                 // (impossible) failure gracefully instead of panicking.
-                let parent = focus
-                    .as_str()
-                    .rsplit_once('/')
-                    .map(|(p, _)| EntryPath::new(p).ok());
                 let frame = self.stack.last_mut().unwrap();
-                frame.focus = parent.flatten();
+                frame.focus = focus.parent();
             }
             None => {
                 // Pop the nested-archive frame.
@@ -539,10 +535,16 @@ impl ControllerCore {
                         prefix.push('/');
                     }
                     prefix.push_str(component);
+                    // The prefix is built from validated path components, so
+                    // construction cannot fail; skip the (impossible) failure
+                    // gracefully instead of panicking.
+                    let Some(path) = EntryPath::new(&prefix).ok() else {
+                        continue;
+                    };
                     out.push(BreadcrumbSegment {
                         label: component.to_string(),
                         frame: i,
-                        focus: Some(EntryPath::new(&prefix).expect("prefix is valid")),
+                        focus: Some(path),
                     });
                 }
             }
@@ -809,11 +811,7 @@ impl ProgressSink for ExtractProgressBridge<'_> {
 
 /// Whether `entry` is `selection` itself or a descendant of a selected dir.
 fn is_under(entry: &EntryMeta, selection: &EntryPath) -> bool {
-    entry.path.as_str() == selection.as_str()
-        || entry
-            .path
-            .as_str()
-            .starts_with(&format!("{}/", selection.as_str()))
+    entry.path.is_under(selection)
 }
 
 /// A handle used by the UI to submit intents and cancel in-flight work.

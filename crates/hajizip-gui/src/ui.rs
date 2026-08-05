@@ -86,18 +86,16 @@ pub fn Breadcrumb(
 // Tree view
 // ---------------------------------------------------------------------------
 
-/// A row of the left tree panel.
+/// A row of the left tree panel (all rows are expandable directories).
 #[derive(Clone)]
 struct TreeRowData {
     depth: usize,
     entry: EntryMeta,
-    is_dir: bool,
 }
 
 /// Precomputed display data for one tree row.
 struct RowView {
     path: EntryPath,
-    is_dir: bool,
     indent: usize,
     arrow: Option<Icon>,
     icon: Icon,
@@ -120,29 +118,19 @@ pub fn TreeView(
         .iter()
         .map(|row| {
             let path = row.entry.path.clone();
-            let is_dir = row.is_dir;
             let is_expanded = expanded.read().contains(&path);
-            let arrow = if !is_dir {
-                None
-            } else if is_expanded {
-                Some(Icon::ChevronDown)
-            } else {
-                Some(Icon::ChevronRight)
-            };
-            let icon = if is_dir { Icon::Folder } else { Icon::File };
             let name = path.as_str().rsplit('/').next().unwrap_or("").to_string();
             RowView {
                 path,
-                is_dir,
                 indent: row.depth * 18,
-                arrow,
-                icon,
-                name,
-                row_class: if is_dir {
-                    "tree-row tree-row-dir"
+                arrow: if is_expanded {
+                    Some(Icon::ChevronDown)
                 } else {
-                    "tree-row tree-row-file"
+                    Some(Icon::ChevronRight)
                 },
+                icon: Icon::Folder,
+                name,
+                row_class: "tree-row tree-row-dir",
             }
         })
         .collect();
@@ -157,7 +145,7 @@ pub fn TreeView(
     }
 }
 
-/// Render one tree row as an element.
+/// Render one tree row as an element (every row is a directory).
 fn render_tree_row(
     row: &RowView,
     i: usize,
@@ -165,7 +153,6 @@ fn render_tree_row(
     on_navigate: EventHandler<EntryPath>,
 ) -> Element {
     let path = row.path.clone();
-    let is_dir = row.is_dir;
     let indent = row.indent;
     let arrow = row.arrow;
     let icon = row.icon;
@@ -179,17 +166,13 @@ fn render_tree_row(
             class: "{row_class}",
             style: "padding-left: {indent}px;",
             onclick: move |_| {
-                if is_dir {
-                    let mut set = expanded.write();
-                    if !set.remove(&toggle_path) {
-                        set.insert(toggle_path.clone());
-                    }
+                let mut set = expanded.write();
+                if !set.remove(&toggle_path) {
+                    set.insert(toggle_path.clone());
                 }
             },
             ondoubleclick: move |_| {
-                if is_dir {
-                    on_navigate.call(nav_path.clone());
-                }
+                on_navigate.call(nav_path.clone());
             },
             if let Some(arrow) = arrow {
                 span { class: "tree-arrow",
@@ -213,7 +196,6 @@ fn build_rows(entries: &[EntryMeta], expanded: HashSet<EntryPath>) -> Vec<TreeRo
         .map(|row| TreeRowData {
             depth: row.depth,
             entry: row.entry,
-            is_dir: row.is_dir,
         })
         .collect()
 }

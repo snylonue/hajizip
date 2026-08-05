@@ -25,7 +25,6 @@ use dioxus::prelude::*;
 use hajizip_core::EntryPath;
 
 use crate::actions;
-use crate::config::AppConfig;
 use crate::controller::{ControllerHandle, spawn_controller};
 use crate::events::{ViewState, spawn_event_loop};
 use crate::registry::compose_registry;
@@ -58,9 +57,13 @@ pub fn App() -> Element {
 
     // Create the background controller once and start draining its events
     // into the view state (the event loop lives in `events.rs`).
+    // Load the config once: `ViewState::new` already initialized the signal,
+    // and the controller starts from that same snapshot (its `ConfigChanged`
+    // events take over from there) — no second config-file read at startup.
+    let initial_config = state.config.read().clone();
     let handle = use_hook(|| -> ControllerHandle {
         let registry = Arc::new(compose_registry());
-        let (handle, events) = spawn_controller(registry, AppConfig::load());
+        let (handle, events) = spawn_controller(registry, initial_config.clone());
         spawn_event_loop(&handle, events, window.clone(), state);
         handle
     });
