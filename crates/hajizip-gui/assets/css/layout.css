@@ -159,11 +159,22 @@
     justify-content: center;
     color: var(--c-text-3);
     gap: 12px;
+    margin: 16px;
     padding: 40px;
     background: var(--c-surface);
+    border: 2px dashed var(--c-border);
+    border-radius: var(--radius-lg);
+    overflow-y: auto;
+    transition: border-color 0.15s ease, background 0.15s ease;
 }
 
-.empty-icon { font-size: 56px; opacity: 0.3; }
+/* Drag-over highlight: accent border + tinted fill. */
+.empty-state-dragover {
+    border-color: var(--c-primary);
+    background: var(--c-primary-bg);
+}
+
+.empty-icon { opacity: 0.35; }
 .empty-title { font-size: 16px; font-weight: 600; color: var(--c-text-2); }
 .empty-hint {
     font-size: 13px;

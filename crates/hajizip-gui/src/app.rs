@@ -40,6 +40,7 @@ pub fn App() -> Element {
     let mut expanded = use_signal(HashSet::<EntryPath>::new);
     let mut has_archive = use_signal(|| false);
     let mut search_query = use_signal(String::new);
+    let mut drag_over = use_signal(|| false);
 
     // Dialog state.
     let mut password_prompt = use_signal(|| Option::<PasswordPrompt>::None);
@@ -373,9 +374,14 @@ pub fn App() -> Element {
 
         div {
             class: "app",
-            ondragover: move |evt| evt.prevent_default(),
+            ondragover: move |evt| {
+                evt.prevent_default();
+                drag_over.set(true);
+            },
+            ondragleave: move |_| drag_over.set(false),
             ondrop: move |evt| {
                 evt.prevent_default();
+                drag_over.set(false);
                 if let Some(file) = evt.files().first() {
                     let path = file.path();
                     if !path.as_os_str().is_empty() {
@@ -466,17 +472,20 @@ pub fn App() -> Element {
                     }
                 }
             } else {
-                div { class: "empty-state",
+                div {
+                    class: if *drag_over.read() {
+                        "empty-state empty-state-dragover"
+                    } else {
+                        "empty-state"
+                    },
                     div { class: "empty-icon",
                         IconView { icon: Icon::Package, size: 56 }
                     }
-                    div { class: "empty-title", "No Archive Open" }
+                    div { class: "empty-title", "Drop an archive to open it" }
                     div { class: "empty-hint",
-                        "Click "
+                        "…or click "
                         strong { "Open" }
-                        " to browse for an archive file,"
-                        br {}
-                        "or drag and drop a file onto this window."
+                        " to browse for a file."
                     }
                     if !config.read().recent_files.is_empty() {
                         div { class: "recent-files",
