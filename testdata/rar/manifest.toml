@@ -1,0 +1,142 @@
+# RAR fixtures. Provenance and generation commands in testdata/gen/gen-rar.sh.
+# Entries per fixture (verified with rars 0.4.8 members()):
+#   rar4/rar5-{fastest,fast,normal,good,best,store}.rar: text.txt (2118 B)
+#   rar5-mixed.rar: photo.jpg (2149083 B, stored) + text.txt (2118 B)
+#   rar5-solid.rar: text.txt (2118 B) + photo.jpg (2149083 B), solid chain
+#   rar5-enc.rar / rar5-store-enc.rar: photo.jpg + text.txt, AES-256 (password "test")
+#   rar5-enc-head.rar: same, encrypted header (password "test")
+#   ppmd-o{2,8,16,32,63}.rar: text5.txt (435000 B, RAR4 PPMd)
+#   real-o{16,32,63}.rar: realtext.txt (14631000 B, RAR4 PPMd)
+#   rar4-multi.part{1,2,3}.rar: photo.jpg (2149083 B) split across 3 volumes
+
+[rar4-fastest.rar]
+name = ["text.txt"]
+note = "WinRAR RAR4 -m1 (fastest), 4096 KB dict"
+
+[rar4-fast.rar]
+name = ["text.txt"]
+method = "LZSS"
+note = "WinRAR RAR4 -m2 (fast)"
+
+[rar4-normal.rar]
+name = ["text.txt"]
+method = "LZSS"
+note = "WinRAR RAR4 -m3 (normal)"
+
+[rar4-good.rar]
+name = ["text.txt"]
+method = "LZSS"
+note = "WinRAR RAR4 -m4 (good)"
+
+[rar4-best.rar]
+name = ["text.txt"]
+method = "LZSS"
+note = "WinRAR RAR4 -m5 (best)"
+
+[rar4-store.rar]
+name = ["text.txt"]
+method = "stored"
+note = "WinRAR RAR4 -m0 (store)"
+
+[rar5-fastest.rar]
+name = ["text.txt"]
+note = "WinRAR RAR5 -m1"
+
+[rar5-fast.rar]
+name = ["text.txt"]
+note = "WinRAR RAR5 -m2"
+
+[rar5-normal.rar]
+name = ["text.txt"]
+note = "WinRAR RAR5 -m3"
+
+[rar5-good.rar]
+name = ["text.txt"]
+note = "WinRAR RAR5 -m4"
+
+[rar5-best.rar]
+name = ["text.txt"]
+note = "WinRAR RAR5 -m5"
+
+[rar5-store.rar]
+name = ["text.txt"]
+note = "WinRAR RAR5 -m0 (store)"
+
+[rar5-mixed.rar]
+name = ["photo.jpg", "text.txt"]
+note = "RAR5 normal, stored photo.jpg + compressed text.txt"
+
+[rar5-solid.rar]
+name = ["photo.jpg", "text.txt"]
+note = "RAR5 solid chain (single decode for any member)"
+
+[rar5-enc.rar]
+name = ["photo.jpg", "text.txt"]
+password = "test"
+note = "RAR5 AES-256 content encryption, plain header"
+
+[rar5-enc-head.rar]
+name = ["photo.jpg", "text.txt"]
+password = "test"
+note = "RAR5 AES-256 + encrypted header (needs password to open)"
+
+[rar5-store-enc.rar]
+name = ["photo.jpg", "text.txt"]
+password = "test"
+note = "RAR5 stored (m0) + encrypted: rars defect, read reports CorruptArchive (see local-doc/report-rar5-stored-encrypted.md)"
+
+[ppmd-o2.rar]
+name = ["text5.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 2, generated with -mc2:1mt+"
+
+[ppmd-o8.rar]
+name = ["text5.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 8"
+
+[ppmd-o16.rar]
+name = ["text5.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 16"
+
+[ppmd-o32.rar]
+name = ["text5.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 31 (as stored)"
+
+[ppmd-o63.rar]
+name = ["text5.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 61 (as stored)"
+
+[real-o16.rar]
+name = ["realtext.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 16, 14.6 MB real text"
+
+[real-o32.rar]
+name = ["realtext.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 31, 14.6 MB real text"
+
+[real-o63.rar]
+name = ["realtext.txt"]
+method = "PPMd"
+note = "RAR 4.20 PPMd order 61, 14.6 MB real text"
+
+[rar4-multi.part1.rar]
+name = ["photo.jpg"]
+note = "volume 1 of 3 (photo.jpg split across all volumes)"
+
+[rar4-multi.part2.rar]
+name = ["photo.jpg"]
+note = "volume 2 of 3"
+
+[rar4-multi.part3.rar]
+name = ["photo.jpg"]
+note = "volume 3 of 3"
+
+[corrupt.rar]
+name = ["text.txt"]
+note = "rar4-normal.rar with one data byte flipped: parse OK, read fails CRC (CorruptArchive)"
