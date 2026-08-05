@@ -494,6 +494,10 @@ pub fn PasswordDialog(
 // ---------------------------------------------------------------------------
 
 /// Settings panel (modal): encoding, overwrite policy, mtime preservation.
+///
+/// Changes apply immediately (the config is persisted on every change); the
+/// panel only has a "Done" button to close it. Esc / ✕ also close it (see
+/// `app.rs`).
 #[component]
 pub fn SettingsPanel(
     /// Current config values shown in the controls.
@@ -512,13 +516,24 @@ pub fn SettingsPanel(
     let cfg = config.read().clone();
     let enc_value = encoding_value(cfg.filename_encoding);
     let ovr_value = overwrite_value(cfg.overwrite_policy);
+    // Per-option help line under each select, updated live.
+    let enc_hint = encoding_hint(&cfg.filename_encoding);
+    let ovr_hint = overwrite_hint(cfg.overwrite_policy);
 
     rsx! {
         div { class: "modal-overlay",
             div { class: "modal-card modal-card-lg",
-                h3 { class: "modal-title",
-                    IconView { icon: Icon::Settings, size: 16, class: Some("title-icon".to_string()) }
-                    "Settings"
+                div { class: "modal-card-head",
+                    h3 { class: "modal-title",
+                        IconView { icon: Icon::Settings, size: 16, class: Some("title-icon".to_string()) }
+                        "Settings"
+                    }
+                    button {
+                        class: "btn btn-icon",
+                        onclick: move |_| on_close.call(()),
+                        title: "Close (Esc)",
+                        IconView { icon: Icon::X, size: 16 }
+                    }
                 }
                 div { class: "settings-group",
                     label { class: "settings-label", "Filename encoding" }
@@ -537,6 +552,7 @@ pub fn SettingsPanel(
                         option { value: "big5", "Big5 (Traditional Chinese)" }
                         option { value: "cp437", "CP437 (DOS)" }
                     }
+                    p { class: "settings-hint", "{enc_hint}" }
                 }
                 div { class: "settings-group",
                     label { class: "settings-label", "Overwrite existing files" }
@@ -552,7 +568,9 @@ pub fn SettingsPanel(
                         option { value: "always", "Always overwrite" }
                         option { value: "never", "Never overwrite" }
                         option { value: "newer", "Overwrite if newer" }
+                        option { value: "rename", disabled: true, "Keep both — rename (coming soon)" }
                     }
+                    p { class: "settings-hint", "{ovr_hint}" }
                 }
                 div { class: "settings-checkbox-row",
                     input {
@@ -563,12 +581,44 @@ pub fn SettingsPanel(
                     }
                     label { r#for: "preserve-mtime", "Preserve modification times" }
                 }
+                p { class: "settings-hint", "Keep each file's original modification time from the archive." }
                 div { class: "modal-actions-between",
-                    button { class: "btn", onclick: move |_| on_defaults.call(()), "Restore Defaults" }
-                    button { class: "btn btn-primary", onclick: move |_| on_close.call(()), "Close" }
+                    button { class: "link-danger", onclick: move |_| on_defaults.call(()), "Restore defaults" }
+                    button { class: "btn", onclick: move |_| on_close.call(()), "Done" }
                 }
             }
         }
+    }
+}
+
+/// One-line explanation for the current filename encoding option.
+fn encoding_hint(e: &FilenameEncoding) -> &'static str {
+    use hajizip_core::Codepage;
+    match e {
+        FilenameEncoding::Auto => {
+            "Detect: UTF-8 when flagged, otherwise sniff GBK / Shift-JIS / Big5 from the entry names."
+        }
+        FilenameEncoding::Forced(Codepage::Utf8) => "Treat every entry name as UTF-8.",
+        FilenameEncoding::Forced(Codepage::Gbk) => {
+            "Decode legacy Chinese names (GBK) — the usual fix for garbled mainland-China archives."
+        }
+        FilenameEncoding::Forced(Codepage::ShiftJis) => {
+            "Decode legacy Japanese names (Shift-JIS) — the usual fix for garbled Japanese archives."
+        }
+        FilenameEncoding::Forced(Codepage::Big5) => {
+            "Decode legacy Traditional-Chinese names (Big5)."
+        }
+        FilenameEncoding::Forced(Codepage::Cp437) => "Decode MS-DOS code page 437 names (rare).",
+    }
+}
+
+/// One-line explanation for the current overwrite policy.
+fn overwrite_hint(p: OverwritePolicy) -> &'static str {
+    match p {
+        OverwritePolicy::Ask => "Ask before replacing each existing file.",
+        OverwritePolicy::Always => "Replace existing files without asking.",
+        OverwritePolicy::Never => "Skip existing files and leave them untouched.",
+        OverwritePolicy::Newer => "Replace only when the file in the archive is newer.",
     }
 }
 

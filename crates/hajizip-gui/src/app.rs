@@ -14,6 +14,9 @@ use std::collections::HashSet;
 use std::path::PathBuf;
 use std::sync::Arc;
 
+use dioxus::desktop::tao::event::Event as TaoEvent;
+use dioxus::desktop::tao::keyboard::KeyCode;
+use dioxus::desktop::{WindowEvent, use_wry_event_handler};
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
 use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, OverwriteDecision, OverwritePolicy};
@@ -47,6 +50,20 @@ pub fn App() -> Element {
     let mut progress = use_signal(|| Option::<ProgressUpdate>::None);
     let mut settings_open = use_signal(|| false);
     let mut config = use_signal(AppConfig::load);
+
+    // Esc closes any open modal (settings / password). Window-level keyboard
+    // events arrive through wry; the handler runs on the main thread.
+    use_wry_event_handler(move |event, _target| {
+        if let TaoEvent::WindowEvent {
+            event: WindowEvent::KeyboardInput { event: key, .. },
+            ..
+        } = event
+            && key.physical_key == KeyCode::Escape
+        {
+            settings_open.set(false);
+            password_prompt.set(None);
+        }
+    });
 
     // Create the background controller once and start draining its events.
     let handle = use_hook(|| -> ControllerHandle {
