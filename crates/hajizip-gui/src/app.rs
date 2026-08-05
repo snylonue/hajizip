@@ -28,7 +28,8 @@ use crate::controller::{
 use crate::icons::{Icon, IconView};
 use crate::registry::compose_registry;
 use crate::ui::{
-    AboutModal, Breadcrumb, CSS, FileList, OverflowMenu, PasswordDialog, SettingsPanel, TreeView,
+    AboutModal, Breadcrumb, CSS, EncodingBanner, FileList, OverflowMenu, PasswordDialog,
+    SettingsPanel, TreeView,
 };
 use crate::viewmodel;
 
@@ -46,6 +47,7 @@ pub fn App() -> Element {
     let mut has_archive = use_signal(|| false);
     let mut search_query = use_signal(String::new);
     let mut drag_over = use_signal(|| false);
+    let mut banner_dismissed = use_signal(|| false);
 
     // Dialog state.
     let mut password_prompt = use_signal(|| Option::<PasswordPrompt>::None);
@@ -131,6 +133,7 @@ pub fn App() -> Element {
                         has_archive.set(true);
                         password_prompt.set(None);
                         search_query.set(String::new());
+                        banner_dismissed.set(false);
                         status.set("Archive opened.".to_string());
                     }
                     Event::Navigated {
@@ -491,13 +494,27 @@ pub fn App() -> Element {
                             on_navigate: enter,
                         }
                     }
-                    FileList {
-                        entries: entries,
-                        focus: focus,
-                        selected: selection,
-                        query: search_query.read().clone(),
-                        on_open: enter_list,
-                        on_preview: preview,
+                    div { class: "browser-main",
+                        // Garbled-name hint: U+FFFD in any decoded name means
+                        // the current encoding is wrong for this archive.
+                        if has_archive_value
+                            && !*banner_dismissed.read()
+                            && viewmodel::has_mangled_names(&entries.read())
+                        {
+                            EncodingBanner {
+                                config: config,
+                                on_encoding: set_encoding.clone(),
+                                on_dismiss: move |_| banner_dismissed.set(true),
+                            }
+                        }
+                        FileList {
+                            entries: entries,
+                            focus: focus,
+                            selected: selection,
+                            query: search_query.read().clone(),
+                            on_open: enter_list,
+                            on_preview: preview,
+                        }
                     }
                 }
             } else {

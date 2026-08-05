@@ -32,6 +32,16 @@ pub fn children_of(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<Entr
     hajizip_core::archive::child_entries(entries, focus)
 }
 
+/// Whether any entry's decoded name still contains U+FFFD (the replacement
+/// character produced when a codepage cannot decode a byte).
+///
+/// A clean decode never produces U+FFFD, so its presence means the current
+/// filename encoding is wrong for this archive — the banner offers a quick
+/// way to try another codepage without hunting through Settings.
+pub fn has_mangled_names(entries: &[EntryMeta]) -> bool {
+    entries.iter().any(|e| e.path.as_str().contains('\u{FFFD}'))
+}
+
 /// Children of `focus` filtered by a case-insensitive substring query.
 ///
 /// An empty / whitespace-only query returns everything. The query matches
@@ -515,6 +525,18 @@ mod tests {
 
         // Empty selection → zero.
         assert_eq!(selection_summary(&list, &HashSet::new()), (0, 0));
+    }
+
+    #[test]
+    fn mangled_names_detect_replacement_characters() {
+        // Clean names → no banner.
+        let clean = vec![meta("ok.txt", NodeKind::File, None)];
+        assert!(!has_mangled_names(&clean));
+
+        // Force a mangled decoded path by adjusting the entry directly.
+        let mut mangled = meta("bad.txt", NodeKind::File, None);
+        mangled.path = EntryPath::new("\u{FFFD}ame.txt").unwrap();
+        assert!(has_mangled_names(&[mangled]));
     }
 
     #[test]

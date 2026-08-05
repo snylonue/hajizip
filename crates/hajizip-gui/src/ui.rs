@@ -722,6 +722,56 @@ pub fn AboutModal(on_close: EventHandler<()>) -> Element {
 }
 
 // ---------------------------------------------------------------------------
+// Encoding banner
+// ---------------------------------------------------------------------------
+
+/// Slim warning bar shown above the file list when decoded entry names still
+/// contain U+FFFD replacement characters (the current filename encoding does
+/// not match the archive). Offers a quick codepage switch; switching reopens
+/// the archive with the new encoding (controller `SetEncoding`).
+#[component]
+pub fn EncodingBanner(
+    /// Current config (for the selected encoding).
+    config: Signal<AppConfig>,
+    /// Called when the user picks a filename encoding.
+    on_encoding: EventHandler<FilenameEncoding>,
+    /// Called to dismiss the banner for this archive.
+    on_dismiss: EventHandler<()>,
+) -> Element {
+    let enc_value = encoding_value(config.read().filename_encoding);
+    rsx! {
+        div { class: "encoding-banner",
+            IconView { icon: Icon::Key, size: 14, class: Some("banner-icon".to_string()) }
+            span { class: "banner-text",
+                strong { "Garbled filenames?" }
+                " Try a different encoding:"
+            }
+            select {
+                class: "banner-select",
+                value: enc_value,
+                onchange: move |e| {
+                    if let Some(enc) = parse_encoding(&e.value()) {
+                        on_encoding.call(enc);
+                    }
+                },
+                option { value: "auto", "Auto (detect)" }
+                option { value: "utf8", "UTF-8" }
+                option { value: "gbk", "GBK (Simplified Chinese)" }
+                option { value: "shift-jis", "Shift-JIS (Japanese)" }
+                option { value: "big5", "Big5 (Traditional Chinese)" }
+                option { value: "cp437", "CP437 (DOS)" }
+            }
+            button {
+                class: "banner-close",
+                title: "Dismiss",
+                onclick: move |_| on_dismiss.call(()),
+                IconView { icon: Icon::X, size: 12 }
+            }
+        }
+    }
+}
+
+// ---------------------------------------------------------------------------
 // Encoding / overwrite helpers
 // ---------------------------------------------------------------------------
 

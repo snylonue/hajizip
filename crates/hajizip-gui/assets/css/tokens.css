@@ -43,6 +43,7 @@
     --c-danger-border: #fecaca;
     --c-success: #1a7f37;
     --c-warning: #9a6700;
+    --c-warning-bg: #fdf6ec;
 
     /* Type icon tints (file list) */
     --c-type-archive: #2563eb;
@@ -99,6 +100,7 @@
         --c-danger-border: #5c2a2a;
         --c-success: #3fb950;
         --c-warning: #d29922;
+        --c-warning-bg: #3a2f1d;
 
         --c-type-archive: #4f8cff;
         --c-type-code: #e3a008;
