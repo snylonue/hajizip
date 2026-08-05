@@ -27,6 +27,7 @@ use crate::registry::compose_registry;
 use crate::ui::{
     Breadcrumb, CSS, FileList, PasswordDialog, ProgressDialog, SettingsPanel, TreeView,
 };
+use crate::viewmodel;
 
 /// The application root component.
 #[component]
@@ -311,6 +312,14 @@ pub fn App() -> Element {
     let status_text = status.read().clone();
     let status_has_text = !status_text.is_empty();
 
+    // Flat archives (no directories at the root) get the whole left sidebar
+    // hidden; the space returns to the file list (§4.3 of review-ui-v2).
+    // Implied dirs count too, so this uses the same child_entries view the
+    // tree renders.
+    let has_sidebar = viewmodel::children_of(&entries.read(), None)
+        .iter()
+        .any(|e| e.kind == hajizip_core::NodeKind::Dir);
+
     // The Extract button doubles as "extract partial files": with no selection
     // it extracts the whole archive; with a selection it extracts only the
     // chosen entries (directories select their whole subtree). The label
@@ -404,10 +413,12 @@ pub fn App() -> Element {
                 }
 
                 div { class: "browser",
-                    TreeView {
-                        entries: entries,
-                        expanded: expanded,
-                        on_navigate: enter,
+                    if has_sidebar {
+                        TreeView {
+                            entries: entries,
+                            expanded: expanded,
+                            on_navigate: enter,
+                        }
                     }
                     FileList {
                         entries: entries,

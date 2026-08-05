@@ -147,6 +147,7 @@ pub fn TreeView(
 
     rsx! {
         div { class: "tree",
+            div { class: "tree-header", "Folders" }
             for (i, row) in views.iter().enumerate() {
                 { render_tree_row(row, i, expanded, on_navigate) }
             }

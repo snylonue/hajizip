@@ -55,22 +55,26 @@ pub fn filter_children(
 }
 
 /// Flatten the archive tree into indented rows, expanding only the dirs in
-/// `expanded`. An explicit stack keeps the walk iterative (no recursion depth
-/// worries for deep archives).
+/// `expanded`. Only directory nodes are shown (files live in the right-hand
+/// list; see `local-doc/review-ui-v2.md` §4.3). An explicit stack keeps the
+/// walk iterative (no recursion depth worries for deep archives).
 pub fn tree_rows(entries: &[EntryMeta], expanded: &HashSet<EntryPath>) -> Vec<TreeRow> {
     let mut rows = Vec::new();
     let mut stack: Vec<(usize, Option<EntryPath>)> = vec![(0, None)];
     while let Some((depth, focus)) = stack.pop() {
         let children = children_of(entries, focus.as_ref());
-        // Push in reverse so the first child is popped first.
+        // Push in reverse so the first child is popped first. Only dirs are
+        // emitted as rows; file children are skipped entirely.
         for child in children.into_iter().rev() {
-            let is_dir = child.kind == NodeKind::Dir;
+            if child.kind != NodeKind::Dir {
+                continue;
+            }
             rows.push(TreeRow {
                 depth,
                 entry: child.clone(),
-                is_dir,
+                is_dir: true,
             });
-            if is_dir && expanded.contains(&child.path) {
+            if expanded.contains(&child.path) {
                 stack.push((depth + 1, Some(child.path.clone())));
             }
         }
@@ -265,19 +269,25 @@ mod tests {
     }
 
     #[test]
-    fn tree_rows_respect_expansion() {
+    fn tree_rows_show_only_dirs_and_respect_expansion() {
         let expanded: HashSet<EntryPath> = HashSet::new();
         let rows = tree_rows(&entries(), &expanded);
-        assert_eq!(rows.len(), 3);
+        // Only directory rows at the root (files are filtered out).
+        assert_eq!(rows.len(), 2);
         assert_eq!(rows[0].depth, 0);
+        assert!(rows.iter().all(|r| r.is_dir));
+        assert!(rows.iter().any(|r| r.entry.path.as_str() == "dir"));
+        assert!(rows.iter().any(|r| r.entry.path.as_str() == "empty"));
+        assert!(!rows.iter().any(|r| r.entry.path.as_str() == "a.txt"));
 
         let mut expanded = HashSet::new();
         expanded.insert(EntryPath::new("dir").unwrap());
         let rows = tree_rows(&entries(), &expanded);
-        assert_eq!(rows.len(), 5);
-        // The expanded dir's children are pushed at depth 1.
-        assert_eq!(rows.iter().filter(|r| r.depth == 1).count(), 2);
-        assert!(rows.iter().any(|r| r.entry.path.as_str() == "dir/b.txt"));
+        assert_eq!(rows.len(), 3);
+        // The expanded dir's children are pushed at depth 1 (dirs only).
+        assert_eq!(rows.iter().filter(|r| r.depth == 1).count(), 1);
+        assert!(rows.iter().any(|r| r.entry.path.as_str() == "dir/sub"));
+        assert!(!rows.iter().any(|r| r.entry.path.as_str() == "dir/b.txt"));
     }
 
     #[test]
