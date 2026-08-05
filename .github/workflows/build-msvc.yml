@@ -38,8 +38,8 @@ jobs:
           set -euo pipefail
           mkdir -p dist
           # MSVC build: single exe, no WebView2Loader.dll to ship.
-          cp result-windows-msvc/bin/hajizip-gui.exe dist/
-          (cd dist && zip -q hajizip-windows-x86_64.zip hajizip-gui.exe)
+          # -j (junk paths): store hajizip-gui.exe at the zip root only.
+          zip -jq dist/hajizip-windows-x86_64.zip result-windows-msvc/bin/hajizip-gui.exe
 
       - name: Upload workflow artifact
         uses: actions/upload-artifact@v4
