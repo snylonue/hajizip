@@ -11,8 +11,10 @@
 
 html, body {
     height: 100%;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto,
-                 "Helvetica Neue", Arial, sans-serif;
+    /* System-native fonts: Segoe UI Variable on Windows 11, SF Pro on macOS,
+       Roboto on Linux — no web font downloads (offline tool). */
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI Variable Text",
+                 "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
     font-size: 13px;
     color: var(--c-text);
     background: var(--c-bg);
@@ -22,13 +24,15 @@ html, body {
 }
 
 /* Scrollbar (WebKit / Blink) */
-::-webkit-scrollbar { width: 8px; height: 8px; }
+::-webkit-scrollbar { width: 10px; height: 10px; }
 ::-webkit-scrollbar-track { background: transparent; }
 ::-webkit-scrollbar-thumb {
-    background: #cbd5e1;
-    border-radius: 4px;
+    background: var(--c-scrollbar);
+    border-radius: 5px;
+    border: 2px solid transparent;
+    background-clip: content-box;
 }
-::-webkit-scrollbar-thumb:hover { background: #94a3b8; }
+::-webkit-scrollbar-thumb:hover { background: var(--c-scrollbar-hover); }
 ::-webkit-scrollbar-corner { background: transparent; }
 
 /* Inline SVG icon (Lucide line style) */

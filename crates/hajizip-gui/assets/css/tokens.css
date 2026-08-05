@@ -2,6 +2,11 @@
    Design Tokens
    Centralised CSS custom properties for colours, shadows, radii.
    Change a value here and every component picks it up automatically.
+
+   Hierarchy: content surfaces are pure white (light) / #252526 (dark);
+   chrome (header, sidebar) uses --c-surface-alt; a single border tier
+   (#E5E5E5 / #3C3C3C) keeps the shell calm. The dark block follows
+   prefers-color-scheme, so the app follows the OS theme automatically.
    ========================================================================== */
 
 :root {
@@ -10,43 +15,106 @@
     --c-primary-hover: #1d4ed8;
     --c-primary-light: #dbeafe;
     --c-primary-bg: #eff6ff;
+    --c-focus-ring: rgba(37, 99, 235, 0.12);
 
-    /* Surfaces */
-    --c-bg: #f1f5f9;
+    /* Surfaces: content is pure white; chrome is one step off-white */
+    --c-bg: #fafafa;
     --c-surface: #ffffff;
-    --c-surface-alt: #f8fafc;
+    --c-surface-alt: #fafafa;
 
-    /* Borders */
-    --c-border: #e2e8f0;
-    --c-border-light: #f1f5f9;
+    /* Borders: single tier */
+    --c-border: #e5e5e5;
 
     /* Text */
-    --c-text: #1e293b;
-    --c-text-2: #475569;
-    --c-text-3: #94a3b8;
+    --c-text: #1f2328;
+    --c-text-2: #59636e;
+    --c-text-3: #8b949e;
 
     /* Interactive states */
-    --c-hover: #f1f5f9;
-    --c-selected: #eff6ff;
+    --c-hover: #f0f0f0;
+    --c-selected: #eef4ff;
     --c-selected-hover: #e0edff;
-    --c-selected-border: #bfdbfe;
+    --c-selected-border: #c7d7f5;
 
     /* Semantic */
-    --c-danger: #dc2626;
-    --c-danger-hover: #b91c1c;
-    --c-success: #16a34a;
-    --c-warning: #d97706;
+    --c-danger: #d1242f;
+    --c-danger-hover: #b21f29;
+    --c-danger-bg: #fef2f2;
+    --c-danger-border: #fecaca;
+    --c-success: #1a7f37;
+    --c-warning: #9a6700;
+
+    /* Type icon tints (file list) */
+    --c-type-archive: #2563eb;
+    --c-type-code: #d97706;
+    --c-type-image: #16a34a;
+    --c-type-text: #64748b;
+    --c-type-default: #94a3b8;
+
+    /* Scrollbar */
+    --c-scrollbar: #cbd5e1;
+    --c-scrollbar-hover: #94a3b8;
 
     /* Elevation */
-    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.05);
-    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.07),
-                 0 2px 4px -2px rgba(0, 0, 0, 0.05);
-    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.08),
-                 0 4px 6px -4px rgba(0, 0, 0, 0.04);
-    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.1),
-                 0 8px 10px -6px rgba(0, 0, 0, 0.06);
+    --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.06);
+    --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.08),
+                 0 2px 4px -2px rgba(0, 0, 0, 0.06);
+    --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.1),
+                 0 4px 6px -4px rgba(0, 0, 0, 0.05);
+    --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.12),
+                 0 8px 10px -6px rgba(0, 0, 0, 0.08);
 
     /* Shape */
     --radius: 6px;
     --radius-lg: 10px;
+}
+
+/* Dark theme: follows the OS preference (wry WebView reports it). */
+@media (prefers-color-scheme: dark) {
+    :root {
+        --c-primary: #4f8cff;
+        --c-primary-hover: #6b9dff;
+        --c-primary-light: #2b3a55;
+        --c-primary-bg: #1e2a44;
+        --c-focus-ring: rgba(79, 140, 255, 0.25);
+
+        --c-bg: #1e1e1e;
+        --c-surface: #252526;
+        --c-surface-alt: #2d2d30;
+
+        --c-border: #3c3c3c;
+
+        --c-text: #e8eaed;
+        --c-text-2: #c5c9cf;
+        --c-text-3: #9ca3af;
+
+        --c-hover: #2d2d30;
+        --c-selected: #1e2a44;
+        --c-selected-hover: #243152;
+        --c-selected-border: #3b5b8f;
+
+        --c-danger: #f14c4c;
+        --c-danger-hover: #ff6b6b;
+        --c-danger-bg: #3a1d1d;
+        --c-danger-border: #5c2a2a;
+        --c-success: #3fb950;
+        --c-warning: #d29922;
+
+        --c-type-archive: #4f8cff;
+        --c-type-code: #e3a008;
+        --c-type-image: #3fb950;
+        --c-type-text: #a8b3c0;
+        --c-type-default: #8b949e;
+
+        --c-scrollbar: #4a4a4a;
+        --c-scrollbar-hover: #5c5c5c;
+
+        --shadow-sm: 0 1px 2px rgba(0, 0, 0, 0.3);
+        --shadow-md: 0 4px 6px -1px rgba(0, 0, 0, 0.35),
+                     0 2px 4px -2px rgba(0, 0, 0, 0.25);
+        --shadow-lg: 0 10px 15px -3px rgba(0, 0, 0, 0.4),
+                     0 4px 6px -4px rgba(0, 0, 0, 0.3);
+        --shadow-xl: 0 20px 25px -5px rgba(0, 0, 0, 0.5),
+                     0 8px 10px -6px rgba(0, 0, 0, 0.35);
+    }
 }

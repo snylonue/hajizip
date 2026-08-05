@@ -24,7 +24,7 @@
     user-select: none;
 }
 
-.btn:hover { background: var(--c-hover); border-color: #cbd5e1; }
+.btn:hover { background: var(--c-hover); border-color: var(--c-text-3); }
 .btn:active { transform: scale(0.97); }
 .btn:disabled { opacity: 0.4; cursor: not-allowed; transform: none; }
 
@@ -85,7 +85,7 @@
     top: 0;
     z-index: 2;
     padding: 8px 12px;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--c-text-2);
     text-transform: uppercase;
@@ -154,7 +154,7 @@
 .filelist th {
     padding: 8px 12px;
     text-align: left;
-    font-size: 11px;
+    font-size: 12px;
     font-weight: 600;
     color: var(--c-text-2);
     text-transform: uppercase;
@@ -188,7 +188,7 @@
 .filelist td {
     padding: 6px 12px;
     font-size: 13px;
-    border-bottom: 1px solid var(--c-border-light);
+    border-bottom: 1px solid var(--c-border);
     overflow: hidden;
     text-overflow: ellipsis;
     white-space: nowrap;
@@ -253,11 +253,11 @@
 
 /* Type icon tints (theme-aware base colour comes from `currentColor`) */
 .icon-type-dir { color: var(--c-primary); }
-.icon-type-archive { color: #2563eb; }
-.icon-type-code { color: #d97706; }
-.icon-type-image { color: #16a34a; }
-.icon-type-text { color: #64748b; }
-.icon-type-default { color: #94a3b8; }
+.icon-type-archive { color: var(--c-type-archive); }
+.icon-type-code { color: var(--c-type-code); }
+.icon-type-image { color: var(--c-type-image); }
+.icon-type-text { color: var(--c-type-text); }
+.icon-type-default { color: var(--c-type-default); }
 
 .icon-lock { color: var(--c-warning); }
 
@@ -329,9 +329,9 @@
     font-size: 13px;
     margin-bottom: 8px;
     padding: 8px 12px;
-    background: #fef2f2;
+    background: var(--c-danger-bg);
     border-radius: var(--radius);
-    border: 1px solid #fecaca;
+    border: 1px solid var(--c-danger-border);
 }
 
 .modal-input {
@@ -349,7 +349,7 @@
 
 .modal-input:focus {
     border-color: var(--c-primary);
-    box-shadow: 0 0 0 3px rgba(37, 99, 235, 0.1);
+    box-shadow: 0 0 0 3px var(--c-focus-ring);
 }
 
 .modal-actions {
@@ -376,7 +376,7 @@
 
 .progress-fill {
     height: 100%;
-    background: linear-gradient(90deg, var(--c-primary), #3b82f6);
+    background: var(--c-primary);
     border-radius: 4px;
     transition: width 0.3s ease;
 }
