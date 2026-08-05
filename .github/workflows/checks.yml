@@ -1,0 +1,49 @@
+# Health checks for the flake packages: Linux GUI (native) and Windows GUI
+# via MinGW (fallback). The Windows MSVC package is built separately in
+# build-msvc.yml (it produces the distributable artifact).
+#
+# Builds are cached by hestia (Nix binary cache backed by the GitHub Actions
+# cache, https://github.com/Mic92/hestia), replacing magic-nix-cache-action.
+
+name: checks
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build-linux:
+    name: Build Linux package
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Enable Nix cache (hestia)
+        uses: Mic92/hestia@v3
+
+      - name: Build Linux package
+        run: nix build '.#packages.x86_64-linux.gui'
+
+  build-mingw:
+    name: Build Windows MinGW package (fallback check)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Enable Nix cache (hestia)
+        uses: Mic92/hestia@v3
+
+      - name: Build Windows MinGW package
+        run: nix build '.#packages.x86_64-linux.windows'

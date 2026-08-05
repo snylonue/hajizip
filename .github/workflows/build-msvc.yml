@@ -1,0 +1,48 @@
+# Build the Windows MSVC package (single exe, no WebView2Loader.dll to ship;
+# needs only the WebView2 Runtime, present on Win10/11) and upload it as a
+# workflow artifact. No GitHub release is published anymore — the zip is
+# downloadable from the Actions run page.
+
+name: build-msvc
+
+on:
+  push:
+    branches:
+      - master
+    tags:
+      - "v*"
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v7
+
+      - name: Install Nix
+        uses: DeterminateSystems/nix-installer-action@v22
+      - name: Enable Nix cache (hestia)
+        uses: Mic92/hestia@v3
+
+      # Windows MSVC build (uploaded): single exe, no DLLs. The CRT/SDK
+      # download happens once inside the FOD (fixed-output derivation), then
+      # everything is cached and offline.
+      - name: Build Windows MSVC package
+        run: nix build '.#packages.x86_64-linux.windows-msvc' -o result-windows-msvc
+
+      - name: Collect Windows artifact
+        run: |
+          set -euo pipefail
+          mkdir -p dist
+          # MSVC build: single exe, no WebView2Loader.dll to ship.
+          cp result-windows-msvc/bin/hajizip-gui.exe dist/
+          (cd dist && zip -q hajizip-windows-x86_64.zip hajizip-gui.exe)
+
+      - name: Upload workflow artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: hajizip-windows-x86_64
+          path: dist/hajizip-windows-x86_64.zip
