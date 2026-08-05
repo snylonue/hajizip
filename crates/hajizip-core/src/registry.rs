@@ -53,6 +53,7 @@ impl Registry {
             .register_archive(crate::archive::zip::ZipFormat)
             .register_archive(crate::archive::tar::TarFormat)
             .register_archive(crate::archive::sevenz::SevenZipFormat)
+            .register_archive(crate::archive::rar::RarFormat)
             .register_codec(crate::codec::gzip::GzipFormat)
             .register_codec(crate::codec::xz::XzFormat)
     }
@@ -205,8 +206,8 @@ mod tests {
     fn with_all_formats_registers_every_core_format() {
         let reg = Registry::with_all_formats();
         // Keep these counts in sync with the formats core implements: zip,
-        // tar and 7z archives; gzip and xz codecs.
-        assert_eq!(reg.archive_formats().len(), 3, "zip + tar + 7z");
+        // tar, 7z and rar archives; gzip and xz codecs.
+        assert_eq!(reg.archive_formats().len(), 4, "zip + tar + 7z + rar");
         assert_eq!(reg.codecs().len(), 2, "gzip + xz");
         // Each one is reachable through auto-detection (magic bytes, or the
         // extension fallback for tar whose magic sits at offset 257).
@@ -219,6 +220,18 @@ mod tests {
                 .expect("7z")
                 .id(),
             "7z"
+        );
+        assert_eq!(
+            reg.detect_archive(b"Rar!\x1a\x07\x00", None)
+                .expect("rar4")
+                .id(),
+            "rar"
+        );
+        assert_eq!(
+            reg.detect_archive(b"Rar!\x1a\x07\x01\x00", None)
+                .expect("rar5")
+                .id(),
+            "rar"
         );
         assert_eq!(
             reg.detect_archive(b"", Some("tar")).expect("tar").id(),
