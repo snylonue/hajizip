@@ -474,7 +474,7 @@ pub fn SettingsPanel(
                                 on_overwrite.call(policy);
                             }
                         },
-                        option { value: "ask", "Ask (skip existing for now)" }
+                        option { value: "ask", "Ask when a file exists" }
                         option { value: "always", "Always overwrite" }
                         option { value: "never", "Never overwrite" }
                         option { value: "newer", "Overwrite if newer" }

@@ -21,8 +21,8 @@ use std::sync::{Arc, Mutex};
 
 use hajizip_core::{
     Archive, CancellationToken, EntryMeta, EntryPath, Error as CoreError, ExtractEngine,
-    ExtractOptions, ExtractReport, FilenameEncoding, NodeKind, OpenOptions, OverwritePolicy,
-    ProgressSink, Registry, Secret, Source,
+    ExtractOptions, ExtractReport, FilenameEncoding, NodeKind, OpenOptions, OverwriteDecision,
+    OverwritePolicy, ProgressSink, Registry, Secret, Source,
 };
 
 use crate::config::AppConfig;
@@ -132,6 +132,15 @@ pub enum Event {
     },
     /// Progress of an in-flight extraction.
     Progress(ProgressUpdate),
+    /// An existing destination file conflicts with an entry while the
+    /// overwrite policy is [`OverwritePolicy::Ask`]. The worker thread blocks
+    /// until the UI sends an [`OverwriteDecision`] back through the handle.
+    AskOverwrite {
+        /// Entry path whose destination already exists.
+        path: EntryPath,
+        /// Destination path that already exists.
+        dest: PathBuf,
+    },
     /// A single file entry was extracted to `temp_path` for previewing; the
     /// UI should open it with the system default application.
     PreviewReady {
@@ -176,6 +185,9 @@ pub struct ControllerCore {
     stack: Vec<NavFrame>,
     /// Token slot shared with the UI handle.
     cancel: CancelSlot,
+    /// Receiver for per-file overwrite decisions made by the UI while an
+    /// Ask-policy extraction blocks inside `on_ask_overwrite`.
+    ask_decisions: Option<tokio::sync::mpsc::UnboundedReceiver<OverwriteDecision>>,
     /// Last successfully opened source, to re-open on encoding changes.
     last_open: Option<(PathBuf, Option<String>)>,
     /// Directory holding the most recent preview extraction (cleaned up
@@ -194,12 +206,26 @@ impl ControllerCore {
     }
 
     /// Create a controller sharing the given cancellation slot with the UI.
+    #[cfg(test)]
     fn with_cancel_slot(registry: Arc<Registry>, config: AppConfig, cancel: CancelSlot) -> Self {
+        Self::with_channels(registry, config, cancel, None)
+    }
+
+    /// Create a controller with an optional per-file overwrite decision
+    /// channel (used by the interactive UI; `None` falls back to the safe
+    /// skip default in `on_ask_overwrite`).
+    fn with_channels(
+        registry: Arc<Registry>,
+        config: AppConfig,
+        cancel: CancelSlot,
+        ask_decisions: Option<tokio::sync::mpsc::UnboundedReceiver<OverwriteDecision>>,
+    ) -> Self {
         Self {
             registry,
             config,
             stack: Vec::new(),
             cancel,
+            ask_decisions,
             last_open: None,
             preview_dir: None,
         }
@@ -579,6 +605,7 @@ impl ControllerCore {
             total_bytes,
             done_bytes: 0,
             entries_done: 0,
+            ask_decisions: self.ask_decisions.as_mut(),
         };
 
         let result = ExtractEngine::run(archive.as_ref(), &exact, &opts, &mut bridge, &token);
@@ -599,6 +626,8 @@ struct ExtractProgressBridge<'a> {
     total_bytes: u64,
     done_bytes: u64,
     entries_done: u64,
+    /// Per-file overwrite decision channel, when the UI provides one.
+    ask_decisions: Option<&'a mut tokio::sync::mpsc::UnboundedReceiver<OverwriteDecision>>,
 }
 
 impl ProgressSink for ExtractProgressBridge<'_> {
@@ -618,6 +647,21 @@ impl ProgressSink for ExtractProgressBridge<'_> {
     fn on_entry_done(&mut self, _path: &EntryPath) {
         self.entries_done += 1;
     }
+
+    fn on_ask_overwrite(&mut self, path: &EntryPath, dest: &Path) -> OverwriteDecision {
+        // Ask the UI, then block until it answers. The worker thread is the
+        // only source of `AskOverwrite` events and waits for exactly one
+        // decision per event, so decisions arrive in order.
+        (self.emit)(Event::AskOverwrite {
+            path: path.clone(),
+            dest: dest.to_path_buf(),
+        });
+        match self.ask_decisions.as_mut() {
+            // The UI dropped the decision channel: fall back to safe skip.
+            Some(rx) => rx.blocking_recv().unwrap_or(OverwriteDecision::Skip),
+            None => OverwriteDecision::Skip,
+        }
+    }
 }
 
 /// Whether `entry` is `selection` itself or a descendant of a selected dir.
@@ -636,6 +680,9 @@ pub struct ControllerHandle {
     pub commands: tokio::sync::mpsc::UnboundedSender<Intent>,
     /// Shared cancellation slot; cancelling never waits for the worker.
     cancel: CancelSlot,
+    /// Send a per-file overwrite decision back to the worker while it blocks
+    /// inside `on_ask_overwrite`. Never blocks.
+    pub decisions: tokio::sync::mpsc::UnboundedSender<OverwriteDecision>,
 }
 
 impl ControllerHandle {
@@ -663,11 +710,13 @@ pub fn spawn_controller(
 ) {
     let (cmd_tx, mut cmd_rx) = tokio::sync::mpsc::unbounded_channel::<Intent>();
     let (event_tx, event_rx) = tokio::sync::mpsc::unbounded_channel::<Event>();
+    let (decision_tx, decision_rx) = tokio::sync::mpsc::unbounded_channel::<OverwriteDecision>();
     let cancel: CancelSlot = Arc::new(Mutex::new(None));
     let cancel_for_core = cancel.clone();
 
     std::thread::spawn(move || {
-        let mut core = ControllerCore::with_cancel_slot(registry, config, cancel_for_core);
+        let mut core =
+            ControllerCore::with_channels(registry, config, cancel_for_core, Some(decision_rx));
         // `blocking_recv` is fine here: this is a dedicated OS thread whose
         // whole job is to wait for and process intents.
         while let Some(intent) = cmd_rx.blocking_recv() {
@@ -686,6 +735,7 @@ pub fn spawn_controller(
         ControllerHandle {
             commands: cmd_tx,
             cancel,
+            decisions: decision_tx,
         },
         event_rx,
     )
@@ -869,6 +919,25 @@ mod tests {
 
     fn core_with(registry: Registry) -> ControllerCore {
         ControllerCore::new(Arc::new(registry), AppConfig::default())
+    }
+
+    /// Build a core with an overwrite-decision channel so tests can answer
+    /// the per-file `Ask` prompt from another thread (the controller blocks
+    /// inside `ExtractEngine::run` until the decision arrives).
+    fn core_with_ask(
+        registry: Registry,
+    ) -> (
+        ControllerCore,
+        tokio::sync::mpsc::UnboundedSender<OverwriteDecision>,
+    ) {
+        let (ask_tx, ask_rx) = tokio::sync::mpsc::unbounded_channel();
+        let core = ControllerCore::with_channels(
+            Arc::new(registry),
+            AppConfig::default(),
+            Arc::new(Mutex::new(None)),
+            Some(ask_rx),
+        );
+        (core, ask_tx)
     }
 
     #[test]
@@ -1217,7 +1286,8 @@ mod tests {
                 password: None,
             },
         );
-        // Default policy is Ask → skip existing files.
+        // Default policy is Ask → without a decision channel, existing files
+        // are skipped (safe default).
         let dest =
             std::env::temp_dir().join(format!("hajizip-gui-overwrite-{}", std::process::id()));
         std::fs::create_dir_all(&dest).unwrap();
@@ -1241,6 +1311,163 @@ mod tests {
         assert_eq!(
             std::fs::read_to_string(dest.join("a.txt")).unwrap(),
             "existing"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn ask_policy_prompts_and_overwrites_on_yes() {
+        let entries = vec![meta("a.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let (mut core, ask_tx) = core_with_ask(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("ask-yes.fake"),
+                password: None,
+            },
+        );
+
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-ask-yes-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("a.txt"), b"existing").unwrap();
+
+        // Answer from another thread: the controller blocks inside
+        // `ExtractEngine::run` until the decision arrives.
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            ask_tx.send(OverwriteDecision::Overwrite).unwrap();
+        });
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::AskOverwrite { .. })),
+            "expected an AskOverwrite event, got {events:?}"
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 1);
+                assert_eq!(report.skipped, 0);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // The existing file was replaced by the archive entry (empty content:
+        // the fake entry's uncompressed size is 0).
+        assert_eq!(std::fs::read_to_string(dest.join("a.txt")).unwrap(), "");
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn ask_policy_prompts_and_skips_on_no() {
+        let entries = vec![meta("a.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let (mut core, ask_tx) = core_with_ask(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("ask-no.fake"),
+                password: None,
+            },
+        );
+
+        let dest = std::env::temp_dir().join(format!("hajizip-gui-ask-no-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("a.txt"), b"existing").unwrap();
+
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            ask_tx.send(OverwriteDecision::Skip).unwrap();
+        });
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::AskOverwrite { .. })),
+            "expected an AskOverwrite event, got {events:?}"
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 0);
+                assert_eq!(report.skipped, 1);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        // Existing content preserved.
+        assert_eq!(
+            std::fs::read_to_string(dest.join("a.txt")).unwrap(),
+            "existing"
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn ask_policy_cancel_aborts_the_run() {
+        // The UI's behaviour on "Cancel" in the ask dialog: cancel the token
+        // first, then release the blocked worker with a Skip. The run must
+        // abort with Cancelled instead of continuing.
+        let entries = vec![meta("a.txt"), meta("b.txt")];
+        let registry = Registry::new().register_archive(OkFormat { entries });
+        let (mut core, ask_tx) = core_with_ask(registry);
+        run(
+            &mut core,
+            &Intent::Open {
+                path: temp_archive("ask-cancel.fake"),
+                password: None,
+            },
+        );
+
+        let dest =
+            std::env::temp_dir().join(format!("hajizip-gui-ask-cancel-{}", std::process::id()));
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("a.txt"), b"existing").unwrap();
+
+        // The cancellation token is installed at extraction start; poll until
+        // it appears, cancel it, then release the blocked worker.
+        let cancel_slot = core.cancel.clone();
+        std::thread::spawn(move || {
+            std::thread::sleep(std::time::Duration::from_millis(50));
+            loop {
+                let token = cancel_slot.lock().unwrap().clone();
+                if let Some(t) = token {
+                    t.cancel();
+                    break;
+                }
+                std::thread::sleep(std::time::Duration::from_millis(2));
+            }
+            ask_tx.send(OverwriteDecision::Skip).unwrap();
+        });
+
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        assert!(
+            events
+                .iter()
+                .any(|e| matches!(e, Event::AskOverwrite { .. })),
+            "expected an AskOverwrite event, got {events:?}"
+        );
+        assert!(
+            matches!(events.last(), Some(Event::Cancelled)),
+            "expected Cancelled, got {events:?}"
         );
         let _ = std::fs::remove_dir_all(&dest);
     }

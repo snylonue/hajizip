@@ -16,7 +16,7 @@ use std::sync::Arc;
 
 use dioxus::html::HasFileData;
 use dioxus::prelude::*;
-use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, OverwritePolicy};
+use hajizip_core::{EntryMeta, EntryPath, FilenameEncoding, OverwriteDecision, OverwritePolicy};
 
 use crate::config::AppConfig;
 use crate::controller::{
@@ -50,6 +50,37 @@ pub fn App() -> Element {
     let handle = use_hook(|| -> ControllerHandle {
         let registry = Arc::new(compose_registry());
         let (handle, mut events) = spawn_controller(registry, AppConfig::load());
+
+        // Ask-overwrite dialog worker: conflicts are forwarded over an mpsc
+        // queue and answered in order by a dedicated thread (rfd blocks its
+        // thread, the UI thread never blocks). The controller blocks inside
+        // core's `on_ask_overwrite` until the answer arrives, so conflicts
+        // are strictly serialized.
+        let (ask_evt_tx, ask_evt_rx) = std::sync::mpsc::channel::<(EntryPath, PathBuf)>();
+        let dialog_handle = handle.clone();
+        std::thread::spawn(move || {
+            while let Ok((_path, dest)) = ask_evt_rx.recv() {
+                let result = rfd::MessageDialog::new()
+                    .set_title("Overwrite existing file?")
+                    .set_description(format!(
+                        "{} already exists at the destination.\n\nOverwrite it?",
+                        dest.display()
+                    ))
+                    .set_buttons(rfd::MessageButtons::YesNoCancel)
+                    .show();
+                let decision = match result {
+                    rfd::MessageDialogResult::Yes => OverwriteDecision::Overwrite,
+                    rfd::MessageDialogResult::No => OverwriteDecision::Skip,
+                    // Cancel anywhere in the batch aborts the whole run.
+                    _ => {
+                        dialog_handle.cancel();
+                        OverwriteDecision::Skip
+                    }
+                };
+                // The worker is blocked waiting for exactly this decision.
+                let _ = dialog_handle.decisions.send(decision);
+            }
+        });
 
         // Fold controller events into view state. This future runs on the
         // reactive thread, so mutating signals here is safe.
@@ -91,6 +122,10 @@ pub fn App() -> Element {
                     }
                     Event::Progress(update) => {
                         progress.set(Some(update));
+                    }
+                    Event::AskOverwrite { path, dest } => {
+                        // Forward to the dialog worker; it answers in order.
+                        let _ = ask_evt_tx.send((path, dest));
                     }
                     Event::PreviewReady { temp_path } => {
                         // Open the extracted temp file with the system default

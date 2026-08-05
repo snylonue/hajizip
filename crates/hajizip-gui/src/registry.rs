@@ -64,7 +64,7 @@ mod tests {
     #[test]
     fn composed_registry_has_all_core_formats() {
         let reg = compose_registry();
-        assert_eq!(reg.archive_formats().len(), 3, "zip + tar + 7z");
+        assert_eq!(reg.archive_formats().len(), 4, "zip + tar + 7z + rar");
         assert_eq!(reg.codecs().len(), 2, "gzip + xz");
     }
 
