@@ -120,7 +120,9 @@ pub enum Event {
         /// Flat listing of the archive at the top of the navigation stack.
         entries: Vec<EntryMeta>,
     },
-    /// The archive is encrypted and needs a password to open.
+    /// The archive is encrypted and needs a password: either its header is
+    /// encrypted (opening fails), or its members are (listing works, but
+    /// reading — preview/extract — requires the password).
     PasswordRequired {
         /// Path of the archive that needs a password.
         path: PathBuf,
@@ -167,10 +169,39 @@ struct NavFrame {
     archive: Arc<dyn Archive>,
     /// Display name (file name for the root frame, entry name for nested).
     name: String,
+    /// Archive entry that opened this frame (None for the root frame).
+    entry_path: Option<EntryPath>,
     /// Directory currently in focus within this archive (None = root).
     focus: Option<EntryPath>,
     /// Cached flat entry listing (avoids re-listing on every navigation).
     entries: Arc<Vec<EntryMeta>>,
+}
+
+/// Navigation context captured when a password-gated operation is deferred:
+/// which top-level archive to re-open, and which nested-archive chain to
+/// re-enter so the retry lands in the same frame it failed in.
+#[derive(Clone)]
+struct PendingContext {
+    /// Top-level archive path (re-opened with the password).
+    archive: PathBuf,
+    /// Nested-archive entry chain below the root, re-entered in order.
+    nested_chain: Vec<EntryPath>,
+}
+
+/// A preview deferred for lack of a password; retried after re-open.
+struct PendingPreview {
+    context: PendingContext,
+    /// Entry to preview once the chain is re-entered.
+    entry: EntryPath,
+}
+
+/// An extraction deferred for lack of a password; retried after re-open.
+struct PendingExtract {
+    context: PendingContext,
+    /// Exact entry paths to extract (already expanded from the selection).
+    selection: Vec<EntryPath>,
+    /// Destination directory.
+    dest_dir: PathBuf,
 }
 
 /// Shared slot holding the token of the in-flight operation, if any. The UI
@@ -193,6 +224,12 @@ pub struct ControllerCore {
     /// Directory holding the most recent preview extraction (cleaned up
     /// before the next preview or when a new archive is opened).
     preview_dir: Option<PathBuf>,
+    /// Preview deferred for lack of a password (content-encrypted archives
+    /// open without a password, so the first read is what reveals the lock);
+    /// retried once the archive is re-opened with a password.
+    pending_preview: Option<PendingPreview>,
+    /// Extraction deferred for lack of a password; retried after re-open.
+    pending_extract: Option<PendingExtract>,
 }
 
 impl ControllerCore {
@@ -228,6 +265,8 @@ impl ControllerCore {
             ask_decisions,
             last_open: None,
             preview_dir: None,
+            pending_preview: None,
+            pending_extract: None,
         }
     }
 
@@ -311,6 +350,11 @@ impl ControllerCore {
         };
 
         let archive: Arc<dyn Archive> = Arc::from(archive);
+        // Content-encrypted archives (RAR/7z with plain headers, the WinRAR
+        // default) open without a password and list fine; the lock only shows
+        // when a member is read. Prompt for a password right away so preview
+        // and extraction work after the dialog instead of failing per read.
+        let needs_password = password.is_none() && archive.capabilities().needs_password;
         match archive.entries() {
             Ok(entries) => {
                 let name = path
@@ -320,6 +364,7 @@ impl ControllerCore {
                 self.stack = vec![NavFrame {
                     archive,
                     name: name.clone(),
+                    entry_path: None,
                     focus: None,
                     entries: Arc::new(entries.clone()),
                 }];
@@ -329,6 +374,16 @@ impl ControllerCore {
                 self.config.record_recent(path.to_path_buf());
                 emit(Event::ConfigChanged(self.config.clone()));
                 emit(Event::Opened { name, entries });
+                if needs_password {
+                    emit(Event::PasswordRequired {
+                        path: path.to_path_buf(),
+                    });
+                }
+                // Retry any operation deferred for lack of a password, now
+                // that this archive is open with one.
+                if password.is_some() {
+                    self.retry_pending(path, emit);
+                }
             }
             Err(e) => emit(Event::Error(e.to_string())),
         }
@@ -401,6 +456,7 @@ impl ControllerCore {
                                 self.stack.push(NavFrame {
                                     archive: nested,
                                     name,
+                                    entry_path: Some(path.clone()),
                                     focus: None,
                                     entries: Arc::new(entries),
                                 });
@@ -513,6 +569,11 @@ impl ControllerCore {
     /// effort — the OS may still hold the file open). The resulting path is
     /// reported via [`Event::PreviewReady`] so the UI can hand it to the
     /// platform's default application.
+    ///
+    /// Reading a content-encrypted member without a password fails with
+    /// [`CoreError::PasswordRequired`]; the entry is remembered and a
+    /// [`Event::PasswordRequired`] is emitted so the UI can collect a
+    /// password, after which `open` retries this preview automatically.
     fn preview(&mut self, path: &EntryPath, emit: &mut (dyn FnMut(Event) + Send)) {
         let Some(top) = self.stack.last().cloned() else {
             emit(Event::Error("no archive open".into()));
@@ -552,6 +613,22 @@ impl ControllerCore {
                 self.preview_dir = Some(dir);
                 emit(Event::PreviewReady { temp_path: dest });
             }
+            Err(CoreError::PasswordRequired) => {
+                // The archive is content-encrypted and was opened without a
+                // password. Remember the entry and ask for a password; the
+                // dialog re-opens the archive, and the retry picks the
+                // preview back up (see `retry_pending`). Drop the empty
+                // temp dir.
+                let _ = std::fs::remove_dir_all(&dir);
+                let context = self.pending_context();
+                self.pending_preview = Some(PendingPreview {
+                    context: context.clone(),
+                    entry: path.clone(),
+                });
+                emit(Event::PasswordRequired {
+                    path: context.archive,
+                });
+            }
             Err(e) => emit(Event::Error(e.to_string())),
         }
     }
@@ -562,6 +639,11 @@ impl ControllerCore {
     /// Selection semantics differ from core's exact-match list: the GUI treats
     /// selecting a directory as selecting its whole subtree (`is_under`), so
     /// the selection is expanded to exact entry paths first.
+    ///
+    /// When the archive was opened without a password and the selection
+    /// contains encrypted entries, the run is deferred and a
+    /// [`Event::PasswordRequired`] is emitted instead; after the dialog
+    /// re-opens the archive with a password, `retry_pending` re-runs it.
     fn extract(
         &mut self,
         selection: &[EntryPath],
@@ -583,6 +665,23 @@ impl ControllerCore {
                 .collect()
         };
         let exact: Vec<EntryPath> = selected.iter().map(|e| e.path.clone()).collect();
+
+        // Content-encrypted entries cannot be read without a password; ask
+        // for one up front instead of failing per entry. The extraction is
+        // deferred and retried once the archive is re-opened with a password
+        // (see `retry_pending`).
+        if top.archive.capabilities().needs_password && selected.iter().any(|e| e.encrypted) {
+            let context = self.pending_context();
+            self.pending_extract = Some(PendingExtract {
+                context: context.clone(),
+                selection: exact,
+                dest_dir: dest_dir.to_path_buf(),
+            });
+            emit(Event::PasswordRequired {
+                path: context.archive,
+            });
+            return;
+        }
 
         let opts = ExtractOptions {
             dest_dir: dest_dir.to_path_buf(),
@@ -614,6 +713,50 @@ impl ControllerCore {
             Ok(report) => emit(Event::Done(report)),
             Err(CoreError::Cancelled) => emit(Event::Cancelled),
             Err(e) => emit(Event::Error(e.to_string())),
+        }
+    }
+
+    /// Snapshot the current navigation context for a deferred operation: the
+    /// top-level archive path and the nested-archive entry chain below it.
+    fn pending_context(&self) -> PendingContext {
+        PendingContext {
+            archive: self
+                .last_open
+                .as_ref()
+                .map(|(p, _)| p.clone())
+                .unwrap_or_else(|| PathBuf::from("archive")),
+            nested_chain: self
+                .stack
+                .iter()
+                .skip(1)
+                .filter_map(|f| f.entry_path.clone())
+                .collect(),
+        }
+    }
+
+    /// Re-run an operation deferred for lack of a password, now that the
+    /// archive is open with one. Re-enters the recorded nested-archive chain
+    /// so the retry lands in the frame the operation failed in.
+    fn retry_pending(&mut self, path: &Path, emit: &mut (dyn FnMut(Event) + Send)) {
+        if let Some(pending) = self.pending_preview.take()
+            && pending.context.archive == path
+        {
+            self.reenter_chain(&pending.context.nested_chain, emit);
+            self.preview(&pending.entry, emit);
+        }
+        if let Some(pending) = self.pending_extract.take()
+            && pending.context.archive == path
+        {
+            self.reenter_chain(&pending.context.nested_chain, emit);
+            self.extract(&pending.selection, &pending.dest_dir, emit);
+        }
+    }
+
+    /// Re-enter a recorded nested-archive chain (each entry is an archive
+    /// node in its parent frame). Failures surface as ordinary errors.
+    fn reenter_chain(&mut self, chain: &[EntryPath], emit: &mut (dyn FnMut(Event) + Send)) {
+        for path in chain {
+            self.enter(path, emit);
         }
     }
 }
@@ -2049,5 +2192,241 @@ mod tests {
         }
         assert_eq!(std::fs::metadata(dest.join("a.txt")).unwrap().len(), 16);
         let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    // ---- RAR content encryption (plain header, WinRAR default) ----
+
+    #[test]
+    fn real_content_encrypted_rar_prompts_for_password_on_open() {
+        // rar5-enc.rar encrypts only the member data (header is plain, the
+        // WinRAR default): it opens and lists without a password, but the
+        // GUI must still prompt so preview/extraction don't fail per read.
+        let mut core = real_core();
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: None,
+            },
+        );
+        assert!(
+            matches!(
+                &events[..],
+                [
+                    Event::ConfigChanged(_),
+                    Event::Opened { .. },
+                    Event::PasswordRequired { .. }
+                ]
+            ),
+            "expected ConfigChanged + Opened + PasswordRequired, got {events:?}"
+        );
+    }
+
+    #[test]
+    fn real_content_encrypted_rar_preview_prompts_then_retries_with_password() {
+        let mut core = real_core();
+        // Open without a password: the archive lists fine (plain header).
+        run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: None,
+            },
+        );
+        // Preview without a password → PasswordRequired, not a dead-end
+        // Error, and no temp file is left behind.
+        let events = run(
+            &mut core,
+            &Intent::Preview {
+                path: EntryPath::new("text.txt").unwrap(),
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::PasswordRequired { .. }]),
+            "expected PasswordRequired, got {events:?}"
+        );
+        let fail_dir = std::env::temp_dir().join(format!("hajizip-preview-{}", std::process::id()));
+        assert!(
+            !fail_dir.exists(),
+            "failed preview must not leave temp files"
+        );
+
+        // Submitting the password re-opens the archive and automatically
+        // retries the pending preview.
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: Some("test".to_string()),
+            },
+        );
+        match &events[..] {
+            [
+                Event::ConfigChanged(_),
+                Event::Opened { .. },
+                Event::PreviewReady { temp_path },
+            ] => {
+                assert_eq!(std::fs::metadata(temp_path).unwrap().len(), 2118);
+                let _ = std::fs::remove_dir_all(temp_path.parent().unwrap());
+            }
+            other => panic!("expected ConfigChanged + Opened + PreviewReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_content_encrypted_rar_wrong_password_keeps_pending_preview() {
+        let mut core = real_core();
+        run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: None,
+            },
+        );
+        // Preview triggers a password prompt…
+        run(
+            &mut core,
+            &Intent::Preview {
+                path: EntryPath::new("text.txt").unwrap(),
+            },
+        );
+        // …a wrong password is rejected (dialog stays up)…
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: Some("nope".to_string()),
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::WrongPassword { .. }]),
+            "expected WrongPassword, got {events:?}"
+        );
+        // …and the right one afterwards retries the pending preview.
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: Some("test".to_string()),
+            },
+        );
+        match &events[..] {
+            [
+                Event::ConfigChanged(_),
+                Event::Opened { .. },
+                Event::PreviewReady { temp_path },
+            ] => {
+                let _ = std::fs::remove_dir_all(temp_path.parent().unwrap());
+            }
+            other => panic!("expected ConfigChanged + Opened + PreviewReady, got {other:?}"),
+        }
+    }
+
+    #[test]
+    fn real_content_encrypted_rar_extract_prompts_then_retries_with_password() {
+        let mut core = real_core();
+        // Open without a password (the archive lists fine; the open prompt
+        // is dismissed by the test).
+        run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: None,
+            },
+        );
+        // Extracting encrypted entries without a password defers the run and
+        // asks for a password instead of failing per entry.
+        let dest = temp_dir("e2e-rar-enc-extract");
+        let events = run(
+            &mut core,
+            &Intent::Extract {
+                selection: vec![],
+                dest_dir: dest.clone(),
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::PasswordRequired { .. }]),
+            "expected PasswordRequired, got {events:?}"
+        );
+        assert!(
+            !dest.join("text.txt").exists(),
+            "deferred run must not extract"
+        );
+
+        // Submitting the password re-opens the archive and retries the run.
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("rar/rar5-enc.rar"),
+                password: Some("test".to_string()),
+            },
+        );
+        match events.last() {
+            Some(Event::Done(report)) => {
+                assert_eq!(report.extracted, 2);
+                assert!(report.failed.is_empty(), "failed: {:?}", report.failed);
+            }
+            other => panic!("expected Done, got {other:?}"),
+        }
+        assert_eq!(
+            std::fs::metadata(dest.join("text.txt")).unwrap().len(),
+            2118
+        );
+        let _ = std::fs::remove_dir_all(&dest);
+    }
+
+    #[test]
+    fn real_nested_encrypted_rar_preview_retries_through_chain() {
+        let mut core = real_core();
+        // Open the outer (plain) zip and enter the nested content-encrypted
+        // rar; previewing a member without a password must prompt and
+        // remember the nested chain.
+        run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("zip/nested-enc-rar.zip"),
+                password: None,
+            },
+        );
+        run(
+            &mut core,
+            &Intent::Enter {
+                path: EntryPath::new("rar5-enc.rar").unwrap(),
+            },
+        );
+        let events = run(
+            &mut core,
+            &Intent::Preview {
+                path: EntryPath::new("text.txt").unwrap(),
+            },
+        );
+        assert!(
+            matches!(&events[..], [Event::PasswordRequired { .. }]),
+            "expected PasswordRequired, got {events:?}"
+        );
+
+        // Opening the OUTER archive with the password re-enters the chain
+        // (Navigated) and retries the preview automatically.
+        let events = run(
+            &mut core,
+            &Intent::Open {
+                path: fixture("zip/nested-enc-rar.zip"),
+                password: Some("test".to_string()),
+            },
+        );
+        match &events[..] {
+            [
+                Event::ConfigChanged(_),
+                Event::Opened { .. },
+                Event::Navigated { .. },
+                Event::PreviewReady { temp_path },
+            ] => {
+                assert_eq!(std::fs::metadata(temp_path).unwrap().len(), 2118);
+                let _ = std::fs::remove_dir_all(temp_path.parent().unwrap());
+            }
+            other => {
+                panic!("expected ConfigChanged + Opened + Navigated + PreviewReady, got {other:?}")
+            }
+        }
     }
 }
