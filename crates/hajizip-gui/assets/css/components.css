@@ -180,6 +180,14 @@
 .filelist tr.file-row-selected { background: var(--c-selected) !important; }
 .filelist tr.file-row-selected td { border-bottom-color: var(--c-selected-border); }
 
+/* Empty / no-match row */
+.filelist td.no-match {
+    text-align: center;
+    color: var(--c-text-3);
+    font-size: 12px;
+    padding: 32px 12px;
+}
+
 /* NAME column: type icon + label */
 .filelist td.col-name {
     display: flex;

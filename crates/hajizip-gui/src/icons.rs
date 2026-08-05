@@ -43,6 +43,10 @@ pub enum Icon {
     CornerUpLeft,
     /// Empty state / package.
     Package,
+    /// Search box.
+    Search,
+    /// Clear search / close dialog.
+    X,
 }
 
 /// Path data for [`Icon`], in the order they should be drawn.
@@ -108,6 +112,8 @@ fn icon_paths(icon: Icon) -> &'static [&'static str] {
             "m3.3 7 8.7 5 8.7-5",
             "M12 22V12",
         ],
+        Search => &["M11 19a8 8 0 1 0 0-16 8 8 0 0 0 0 16Z", "m21 21-4.3-4.3"],
+        X => &["M18 6 6 18", "m6 6 12 12"],
     }
 }
 

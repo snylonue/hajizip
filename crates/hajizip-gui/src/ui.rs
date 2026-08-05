@@ -244,6 +244,8 @@ pub fn FileList(
     focus: Signal<Option<EntryPath>>,
     /// Currently selected paths (multi-select).
     selected: Signal<HashSet<EntryPath>>,
+    /// Live search filter (empty = all rows).
+    query: String,
     /// Called when a dir/archive entry is double-clicked (navigate).
     on_open: EventHandler<EntryPath>,
     /// Called when a plain file entry is double-clicked (preview).
@@ -251,7 +253,7 @@ pub fn FileList(
 ) -> Element {
     let flat = entries.read().clone();
     let f = focus.read().clone();
-    let children = viewmodel::children_of(&flat, f.as_ref());
+    let children = viewmodel::filter_children(&flat, f.as_ref(), &query);
     let selected_now = selected.read().clone();
 
     let views: Vec<FileRowView> = children
@@ -287,8 +289,20 @@ pub fn FileList(
                     }
                 }
                 tbody {
-                    for (i, row) in views.iter().enumerate() {
-                        { render_file_row(row, i, selected, on_open, on_preview) }
+                    if views.is_empty() {
+                        tr {
+                            td { class: "no-match", colspan: "5",
+                                if query.trim().is_empty() {
+                                    "This folder is empty"
+                                } else {
+                                    "No entries match the search"
+                                }
+                            }
+                        }
+                    } else {
+                        for (i, row) in views.iter().enumerate() {
+                            { render_file_row(row, i, selected, on_open, on_preview) }
+                        }
                     }
                 }
             }

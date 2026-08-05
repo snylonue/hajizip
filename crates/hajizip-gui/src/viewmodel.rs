@@ -32,6 +32,28 @@ pub fn children_of(entries: &[EntryMeta], focus: Option<&EntryPath>) -> Vec<Entr
     hajizip_core::archive::child_entries(entries, focus)
 }
 
+/// Children of `focus` filtered by a case-insensitive substring query.
+///
+/// An empty / whitespace-only query returns everything. The query matches
+/// anywhere in the full entry path (so searching "sub" finds `dir/sub/x`),
+/// and directory entries match too — filtering is purely a view concern and
+/// never mutates the underlying listing.
+pub fn filter_children(
+    entries: &[EntryMeta],
+    focus: Option<&EntryPath>,
+    query: &str,
+) -> Vec<EntryMeta> {
+    let children = children_of(entries, focus);
+    let query = query.trim().to_lowercase();
+    if query.is_empty() {
+        return children;
+    }
+    children
+        .into_iter()
+        .filter(|e| e.path.as_str().to_lowercase().contains(&query))
+        .collect()
+}
+
 /// Flatten the archive tree into indented rows, expanding only the dirs in
 /// `expanded`. An explicit stack keeps the walk iterative (no recursion depth
 /// worries for deep archives).
@@ -192,6 +214,42 @@ mod tests {
         let kids = children_of(&entries(), Some(&focus));
         let names: Vec<&str> = kids.iter().map(|e| e.path.as_str()).collect();
         assert_eq!(names, vec!["dir/sub", "dir/b.txt"]);
+    }
+
+    #[test]
+    fn filter_children_is_case_insensitive_and_empty_query_passthrough() {
+        fn names_of(list: &[EntryMeta]) -> Vec<String> {
+            list.iter().map(|e| e.path.as_str().to_string()).collect()
+        }
+        // Empty / whitespace query returns all children (same paths).
+        let all = names_of(&children_of(&entries(), None));
+        assert_eq!(names_of(&filter_children(&entries(), None, "")), all);
+        assert_eq!(names_of(&filter_children(&entries(), None, "   ")), all);
+
+        // Case-insensitive substring on the full path.
+        let hits = filter_children(&entries(), None, "TXT");
+        let names: Vec<&str> = hits.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["a.txt"]);
+
+        // Directory entries match by name too.
+        let hits = filter_children(&entries(), None, "dir");
+        let names: Vec<&str> = hits.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["dir"]);
+
+        // No match → empty.
+        assert!(filter_children(&entries(), None, "zzz").is_empty());
+    }
+
+    #[test]
+    fn filter_children_respects_focus() {
+        let focus = EntryPath::new("dir").unwrap();
+        let hits = filter_children(&entries(), Some(&focus), "b.txt");
+        let names: Vec<&str> = hits.iter().map(|e| e.path.as_str()).collect();
+        assert_eq!(names, vec!["dir/b.txt"]);
+        // "sub" matches the nested dir inside dir/.
+        let hits = filter_children(&entries(), Some(&focus), "sub");
+        assert_eq!(hits.len(), 1);
+        assert_eq!(hits[0].path.as_str(), "dir/sub");
     }
 
     #[test]

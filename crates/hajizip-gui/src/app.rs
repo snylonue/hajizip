@@ -40,6 +40,7 @@ pub fn App() -> Element {
     let mut selection = use_signal(HashSet::<EntryPath>::new);
     let mut expanded = use_signal(HashSet::<EntryPath>::new);
     let mut has_archive = use_signal(|| false);
+    let mut search_query = use_signal(String::new);
 
     // Dialog state.
     let mut password_prompt = use_signal(|| Option::<PasswordPrompt>::None);
@@ -105,6 +106,7 @@ pub fn App() -> Element {
                         expanded.set(HashSet::new());
                         has_archive.set(true);
                         password_prompt.set(None);
+                        search_query.set(String::new());
                         status.set("Archive opened.".to_string());
                     }
                     Event::Navigated {
@@ -339,8 +341,32 @@ pub fn App() -> Element {
 
             // ── Header ─────────────────────────────────────────────────
             header { class: "app-header",
-                div { class: "header-actions",
-                    button { class: "btn btn-primary", onclick: open_dialog,
+                div { class: "search-box",
+                    span { class: "search-icon",
+                        IconView { icon: Icon::Search, size: 14 }
+                    }
+                    input {
+                        class: "search-input",
+                        placeholder: "Search files…",
+                        value: "{search_query}",
+                        oninput: move |e| search_query.set(e.value()),
+                        onkeydown: move |e| {
+                            if e.key() == Key::Escape {
+                                search_query.set(String::new());
+                            }
+                        },
+                    }
+                    if !search_query.read().is_empty() {
+                        button {
+                            class: "search-clear",
+                            title: "Clear search",
+                            onclick: move |_| search_query.set(String::new()),
+                            IconView { icon: Icon::X, size: 12 }
+                        }
+                    }
+                }
+                div { class: "header-spacer" }
+                div { class: "header-actions",                    button { class: "btn btn-primary", onclick: open_dialog,
                         IconView { icon: Icon::FolderOpen, size: 16 }
                         "Open"
                     }
@@ -387,6 +413,7 @@ pub fn App() -> Element {
                         entries: entries,
                         focus: focus,
                         selected: selection,
+                        query: search_query.read().clone(),
                         on_open: enter_list,
                         on_preview: preview,
                     }
