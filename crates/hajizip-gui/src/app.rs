@@ -51,6 +51,8 @@ pub fn App() -> Element {
     let handle = use_hook(|| -> ControllerHandle {
         let registry = Arc::new(compose_registry());
         let (handle, mut events) = spawn_controller(registry, AppConfig::load());
+        // Window handle for the dynamic title (archive name — hajizip).
+        let window = dioxus::desktop::use_window();
 
         // Ask-overwrite dialog worker: conflicts are forwarded over an mpsc
         // queue and answered in order by a dedicated thread (rfd blocks its
@@ -92,6 +94,9 @@ pub fn App() -> Element {
                         name,
                         entries: list,
                     } => {
+                        // The archive name lives in the window title; the
+                        // in-window chrome shows only the breadcrumb trail.
+                        window.set_title(&format!("{name} — hajizip"));
                         archive_name.set(name);
                         entries.set(list);
                         breadcrumb.set(Vec::new());
@@ -359,16 +364,17 @@ pub fn App() -> Element {
 
             // ── Main content ────────────────────────────────────────────
             if has_archive_value {
-                // Toolbar with navigation
-                div { class: "toolbar",
+                // Navigation row: back button + breadcrumb trail in one
+                // line (the first crumb is the archive name; clicking it
+                // returns to the archive root).
+                div { class: "navrow",
                     button { class: "btn btn-icon", onclick: back, title: "Go up one level",
                         IconView { icon: Icon::CornerUpLeft, size: 16 }
                     }
-                }
-
-                Breadcrumb {
-                    segments: breadcrumb.read().clone(),
-                    on_jump: jump,
+                    Breadcrumb {
+                        segments: breadcrumb.read().clone(),
+                        on_jump: jump,
+                    }
                 }
 
                 div { class: "browser",

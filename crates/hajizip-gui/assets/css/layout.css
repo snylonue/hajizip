@@ -24,19 +24,6 @@
     z-index: 10;
 }
 
-.app-logo {
-    font-size: 15px;
-    font-weight: 700;
-    color: var(--c-primary);
-    letter-spacing: -0.3px;
-    user-select: none;
-    display: flex;
-    align-items: center;
-    gap: 6px;
-}
-
-.app-logo-icon { font-size: 18px; }
-
 .header-actions {
     display: flex;
     align-items: center;
@@ -45,26 +32,13 @@
 
 .header-spacer { flex: 1; }
 
-.header-archive-name {
-    color: var(--c-text-2);
-    font-size: 12px;
-    font-weight: 500;
-    max-width: 280px;
-    overflow: hidden;
-    text-overflow: ellipsis;
-    white-space: nowrap;
-    background: var(--c-surface-alt);
-    padding: 4px 10px;
-    border-radius: 4px;
-    border: 1px solid var(--c-border-light);
-}
-
-/* --- Toolbar ------------------------------------------------------------- */
-.toolbar {
+/* --- Navigation row (back button + breadcrumb, one line) ----------------- */
+.navrow {
     display: flex;
     align-items: center;
-    padding: 6px 16px;
-    gap: 8px;
+    gap: 4px;
+    padding: 0 12px;
+    min-height: 40px;
     background: var(--c-surface);
     border-bottom: 1px solid var(--c-border);
     flex-shrink: 0;
@@ -76,11 +50,9 @@
     flex-wrap: wrap;
     align-items: center;
     gap: 2px;
-    padding: 8px 16px;
-    background: var(--c-surface);
-    border-bottom: 1px solid var(--c-border);
-    flex-shrink: 0;
-    min-height: 36px;
+    flex: 1;
+    min-width: 0;
+    overflow: hidden;
 }
 
 .breadcrumb-sep {
