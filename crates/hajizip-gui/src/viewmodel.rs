@@ -236,6 +236,40 @@ pub fn time_label(mtime: Option<SystemTime>) -> String {
     format_civil(time::OffsetDateTime::from(mtime).to_offset(offset))
 }
 
+/// Human-friendly relative time for recent timestamps: `just now`,
+/// `5 minutes ago`, `2 hours ago`, `yesterday`, `3 days ago`. Entries older
+/// than [`RELATIVE_AGE_CUTOFF`] fall back to the absolute civil label so the
+/// column stays scannable.
+pub fn relative_time_label(mtime: Option<SystemTime>) -> String {
+    let Some(mtime) = mtime else {
+        return "—".to_string();
+    };
+    let now = SystemTime::now();
+    let Some(age) = now.duration_since(mtime).ok() else {
+        // Clock skew: the entry is in the future; show the absolute time.
+        return time_label(Some(mtime));
+    };
+    const RELATIVE_AGE_CUTOFF: u64 = 7 * 24 * 60 * 60; // 7 days
+    let seconds = age.as_secs();
+    if seconds > RELATIVE_AGE_CUTOFF {
+        return time_label(Some(mtime));
+    }
+    let minutes = seconds / 60;
+    let hours = minutes / 60;
+    let days = hours / 24;
+    if seconds < 60 {
+        "just now".to_string()
+    } else if minutes < 60 {
+        format!("{minutes} minute{}", if minutes == 1 { "" } else { "s" })
+    } else if hours < 24 {
+        format!("{hours} hour{}", if hours == 1 { "" } else { "s" })
+    } else if days == 1 {
+        "yesterday".to_string()
+    } else {
+        format!("{days} days ago")
+    }
+}
+
 /// Whole-archive summary: (entry count, total uncompressed, total compressed).
 ///
 /// Entries without a recorded size contribute 0 to the totals; the caller
@@ -481,6 +515,33 @@ mod tests {
 
         // Empty selection → zero.
         assert_eq!(selection_summary(&list, &HashSet::new()), (0, 0));
+    }
+
+    #[test]
+    fn relative_time_labels() {
+        use std::time::Duration;
+        let now = SystemTime::now();
+        // Future timestamps (clock skew) fall back to the absolute label.
+        let future = now + Duration::from_secs(3600);
+        assert_eq!(relative_time_label(Some(future)), time_label(Some(future)));
+
+        // Relative buckets.
+        assert_eq!(relative_time_label(Some(now)), "just now");
+        let one_min = now - Duration::from_secs(60);
+        assert_eq!(relative_time_label(Some(one_min)), "1 minute");
+        let five_min = now - Duration::from_secs(5 * 60);
+        assert_eq!(relative_time_label(Some(five_min)), "5 minutes");
+        let two_hours = now - Duration::from_secs(2 * 3600);
+        assert_eq!(relative_time_label(Some(two_hours)), "2 hours");
+        let yesterday = now - Duration::from_secs(26 * 3600);
+        assert_eq!(relative_time_label(Some(yesterday)), "yesterday");
+        let three_days = now - Duration::from_secs(3 * 24 * 3600);
+        assert_eq!(relative_time_label(Some(three_days)), "3 days ago");
+
+        // Older than the 7-day cutoff → absolute civil time.
+        let old = now - Duration::from_secs(8 * 24 * 3600);
+        assert_eq!(relative_time_label(Some(old)), time_label(Some(old)));
+        assert_eq!(relative_time_label(None), "—");
     }
 
     #[test]

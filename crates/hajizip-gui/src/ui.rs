@@ -277,7 +277,7 @@ pub fn FileList(
                 locked: entry.encrypted,
                 size: viewmodel::size_label(entry),
                 kind: viewmodel::kind_label(entry.kind).to_string(),
-                time: viewmodel::time_label(entry.mtime),
+                time: viewmodel::relative_time_label(entry.mtime),
                 path,
                 is_file: entry.kind == NodeKind::File,
                 is_dir: entry.kind == NodeKind::Dir,
